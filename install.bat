@@ -1,5 +1,5 @@
 @echo off
-echo Installing DeskGoals dependencies...
+echo Installing Aside dependencies...
 echo.
 python -m pip install --upgrade pystray Pillow pywin32 psutil keyboard tkinterdnd2 pymupdf
 
@@ -9,12 +9,12 @@ python -c "import sys,os;s=os.path.join(sys.prefix,'Scripts','pywin32_postinstal
 
 echo.
 echo Adding Windows Firewall rules for file sharing...
-netsh advfirewall firewall delete rule name="DeskGoals Share TCP" >nul 2>&1
-netsh advfirewall firewall delete rule name="DeskGoals Discovery UDP" >nul 2>&1
-netsh advfirewall firewall delete rule name="DeskGoals Sync TCP" >nul 2>&1
-netsh advfirewall firewall add rule name="DeskGoals Share TCP"     dir=in action=allow protocol=TCP localport=7843
-netsh advfirewall firewall add rule name="DeskGoals Discovery UDP" dir=in action=allow protocol=UDP localport=7844
-netsh advfirewall firewall add rule name="DeskGoals Sync TCP"      dir=in action=allow protocol=TCP localport=7842
+netsh advfirewall firewall delete rule name="Aside Share TCP" >nul 2>&1
+netsh advfirewall firewall delete rule name="Aside Discovery UDP" >nul 2>&1
+netsh advfirewall firewall delete rule name="Aside Sync TCP" >nul 2>&1
+netsh advfirewall firewall add rule name="Aside Share TCP"     dir=in action=allow protocol=TCP localport=7843
+netsh advfirewall firewall add rule name="Aside Discovery UDP" dir=in action=allow protocol=UDP localport=7844
+netsh advfirewall firewall add rule name="Aside Sync TCP"      dir=in action=allow protocol=TCP localport=7842
 echo Firewall rules added.
 
 echo.

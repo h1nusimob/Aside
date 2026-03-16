@@ -1,105 +1,79 @@
-# DeskGoals
+# Aside
 
-A lightweight, always-on-screen goal tracker that lives on your Windows desktop. No browser, no accounts — just a clean floating widget to keep your goals, media, and file transfers in view.
-
----
-
-## Quick Start (First Time Setup)
-
-To get DeskGoals running at its absolute fullest with all features enabled, follow these steps exactly:
-
-1. **Install Python:** Download Python 3.8+ from [python.org](https://www.python.org/downloads/). 
-   * *CRITICAL:* During the installation wizard, you **must** check the box that says **"Add Python to PATH"** before clicking Install.
-2. **Install Dependencies:** Right-click `install.bat` and select **"Run as administrator"**. This downloads the required libraries and automatically configures your Windows Firewall so phone syncing and file sharing will work.
-3. **Create Shortcuts:** Double-click `setup_windows.bat`. This automatically adds DeskGoals to your Windows startup folder so it launches seamlessly when you log in.
-4. **Launch:** Run `start.bat` to open the app silently!
-5. **bring forward**(ctrl + alt + g ) or (tap in tray menu)
----
-
-## Running
-
-| File | What it does |
-|---|---|
-| `start.bat` | Launches the app silently (no console window) |
-| `debug.bat` | Launches with a console — use this if the app won't open to see error codes |
-| `setup_windows.bat` | Registers startup + Start Menu shortcuts |
+Your notes should follow your focus. Aside is a floating notepad that switches context the moment you do.
 
 ---
 
-## Features
+## Setup
 
-### Goals & Workspaces
-- Add text goals by typing in the bottom bar and pressing Enter.
-- Mark goals done by clicking the circle — they move to the Completed tray.
-- Delete any item with the × button.
-- Create multiple **workspaces** (tabs) to separate contexts (e.g., work, personal, a specific project).
-- Completed goals are kept per workspace for **24 hours**, then automatically cleared from the list.
+1. Install **Python 3.8+** from [python.org](https://www.python.org/downloads/) — check **"Add Python to PATH"** during install.
+2. Right-click `install.bat` → **Run as administrator**
+3. Double-click `setup_windows.bat` to add Aside to Windows startup
+4. Run `start.bat` to launch
+5. **Ctrl+Alt+G** or the tray icon to show/hide
 
-### Files, Media, and Notes
-DeskGoals allows you to attach context directly to your tasks:
-- **Drag and Drop:** Drag images, PDFs, or files directly onto the DeskGoals window.
-- **Paste Screenshots:** Hit `Ctrl+V` to paste an image directly from your clipboard.
-- **Manual Attach:** Click the `+` button to browse your PC for files to attach.
-- Whenever you add a file, you will be prompted to add an optional text description to it. 
-- *Note:* DeskGoals creates a physical copy of attached files in your `~/.deskgoals_media` folder. Deleting the card in the app removes it from your list, but the file remains safely on your hard drive.
+---
 
-### P2P File Sharing
-Click the `⇄` icon in the top right to open the File Share panel:
-- **PC-to-PC & PC-to-Phone:** Instantly send files between devices on the same Wi-Fi network. 
-- **Respectful Receiving:** DeskGoals will never force a file onto your computer. You will always get a pop-up prompting you to "Accept" or "Decline" incoming files.
-- Accepted files are automatically saved to your standard Windows `Downloads` folder.
+## App-Sensitive Workspaces
 
-### App-Sensitive Workspaces
-- Automatically switch to a workspace when a specific app gains focus!
-- If DeskGoals is hidden when the matched app opens, it **auto-shows** on screen.
-- Set rules in **Settings → App-Sensitive Workspaces** (e.g., set `chrome.exe` to trigger your "Browsing" workspace).
+This is the core feature. Go to **Settings → App-Sensitive Workspaces**, assign a workspace to an `.exe`, and Aside takes it from there.
 
-### Phone Sync (Local Wi-Fi)
-Access and edit goals from your phone (or another PC's browser) while on the same Wi-Fi network:
-1. Open **Settings → Phone Sync**
-2. Toggle the server **ON**
-3. Open the URL shown (e.g. `http://192.168.1.x:7842`) in your phone or browser.
+```
+figma.exe      → "Design"    your open questions, feedback notes, ref links
+code.exe       → "Dev"       the current task, bugs, PR checklist
+slack.exe      → "Comms"     people to follow up with
+premiere.exe   → "Edit"      cut notes, client feedback, export checklist
+```
 
-From the web page, you can switch workspaces, check off goals, add new ones, and even upload/download files to the host PC. 
+When that app comes into focus, Aside switches to the matched workspace — and if Aside was hidden, it auto-shows on screen. When you're done and switch away, it follows you to the next context.
 
-### Appearance & Controls
-- **Themes:** 4 built-in themes (Dark, Slate, Warm, Light) with adjustable transparency.
-- **Always-on-top:** Toggleable in settings.
-- **Global Hotkey:** Default is `Ctrl+Alt+G` to instantly show/hide the widget from anywhere. (Customizable in Settings).
-- **System Tray:** DeskGoals lives quietly in your system tray (bottom-right of taskbar). Right-click it to Show/Hide, open Settings, or Quit.
+Each workspace is completely isolated: its own goals, attached files, and notes.
+
+---
+
+## Everything Else
+
+**Goals** — Type in the bottom bar, press Enter. Click the circle to complete. Completed goals clear after 24 hours.
+
+**Headers** — Organize goals inside a workspace with small or large section headers.
+
+**Attach anything** — Drag files onto the window, paste a screenshot with Ctrl+V, or click `+` to browse. Add an optional note to any attachment. Files are copied to `~/.aside_media` — deleting a card removes it from the list but keeps the file on disk.
+
+**Links** — Paste a URL into a goal and it becomes clickable. Works in the desktop app and on phone.
+
+**Phone / browser access** — Settings → Phone Sync → toggle on. Open the URL on any device on the same Wi-Fi. You can add goals, check things off, and send files to the host PC.
+
+**P2P file sharing** — Click `⇄` to open the Share panel. Send to any device on the same network. Incoming files always prompt Accept/Decline and land in your Downloads folder.
+
+**Appearance** — 4 themes (Dark, Slate, Warm, Light), adjustable transparency, always-on-top toggle. Hotkey customizable in Settings.
 
 ---
 
 ## Troubleshooting
 
-**App doesn't open at all** Run `debug.bat` — errors print in the console and are saved to `%USERPROFILE%\deskgoals_error.log`.
-
-**`install.bat` shows errors** Make sure Python is installed and that you checked the "Add to PATH" box during installation.
-
-**Drag and Drop isn't working** Run `install.bat` again to ensure `tkinterdnd2` was installed properly. 
-
-**Phone Sync or Share Panel isn't finding devices** Both devices must be on the same Wi-Fi network. Right-click `install.bat` and "Run as administrator" to ensure the firewall rules are properly applied. 
+| Problem | Fix |
+|---|---|
+| App won't open | Run `debug.bat` — errors log to `~/aside_error.log` |
+| Install errors | Confirm Python installed with "Add to PATH" checked |
+| Drag & Drop broken | Re-run `install.bat` to reinstall `tkinterdnd2` |
+| App-Sensitive rules not triggering | Requires `pywin32` + `psutil` — re-run `install.bat` |
+| Phone Sync / Share not finding devices | Both devices must be on the same Wi-Fi; re-run `install.bat` as admin |
 
 ---
 
-## Data & Storage
+## Data
 
-Your data is kept strictly local. Nothing is sent to the cloud.
+Everything stays local. Nothing is sent to the cloud.
 
-* **Settings and Goals:** `%USERPROFILE%\.deskgoals_v3.json`
-* **Media and Pasted Files:** `%USERPROFILE%\.deskgoals_media`
+- **Settings & Goals:** `%USERPROFILE%\.aside.json`
+- **Attached Files:** `%USERPROFILE%\.aside_media`
 
 ---
 
 ## Uninstall
 
-1. Close DeskGoals (right-click the tray icon → Quit)
-2. Delete the downloaded DeskGoals folder
-3. Delete the startup shortcut: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\DeskGoals.lnk`
-4. Delete your saved data and media 
-   * `%USERPROFILE%\.deskgoals_v3.json`
-   * `%USERPROFILE%\.deskgoals_media`
-
-
-
-or right click the unistall and run as admin - this removes all dependancies and firewall rules that were installed.
+1. Right-click tray icon → Quit
+2. Run `uninstall.bat` as administrator
+3. Delete the Aside folder
+4. Delete `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aside.lnk`
+5. Delete `%USERPROFILE%\.aside.json` and `%USERPROFILE%\.aside_media`
