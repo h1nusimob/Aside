@@ -1,3 +1,6 @@
+leave me a comment --- https://form.jotform.com/260813575104150
+
+
 # Aside
 
 Your notes should follow your focus. Aside is a floating notepad that switches context the moment you do.
