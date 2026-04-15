@@ -19,7 +19,7 @@ Your notes should follow your focus. Aside is a floating notepad that switches c
 
 ## App-Sensitive Workspaces
 
-This is the core feature. Go to **Settings → App-Sensitive Workspaces**, assign a workspace to an `.exe`, and Aside takes it from there.
+This is the core feature. Go to **Settings → App Switching**, assign a workspace to an `.exe`, and Aside takes it from there.
 
 ```
 figma.exe      → "Design"    your open questions, feedback notes, ref links
@@ -36,19 +36,21 @@ Each workspace is completely isolated: its own goals, attached files, and notes.
 
 ## Everything Else
 
-**Goals** — Type in the bottom bar, press Enter. Click the circle to complete. Completed goals clear after 24 hours.
+**Goals** — Type in the bottom bar, press Enter. Click the circle to complete. Completed goals are visible in the tray at the bottom and are cleared automatically after 24 hours.
 
-**Headers** — Organize goals inside a workspace with small or large section headers.
+**Headers** — Organize goals inside a workspace with small or large section headers. Click the `¶` button at the left of the input bar to cycle between goal / small header / large header mode.
 
-**Attach anything** — Drag files onto the window, paste a screenshot with Ctrl+V, or click `+` to browse. Add an optional note to any attachment. Files are copied to `~/.aside_media` — deleting a card removes it from the list but keeps the file on disk.
+**Attach anything** — Drag files onto the window, paste a screenshot with Ctrl+V, or click `+` to browse. Add an optional note to any attachment. Files are copied to `~/.aside_media` and removed from disk when you delete the card.
 
 **Links** — Paste a URL into a goal and it becomes clickable. Works in the desktop app and on phone.
 
-**Phone / browser access** — Settings → Phone Sync → toggle on. Open the URL on any device on the same Wi-Fi. You can add goals, check things off, and send files to the host PC.
+**Workspaces** — Add as many as you like with the `＋` tab or Ctrl+T. Right-click a tab to rename, delete, or set a color. Switch by clicking or with Ctrl+1–9.
+
+**Phone / browser access** — Settings → Sync → toggle on. Open the URL shown on any device on the same Wi-Fi. You can add goals, check things off, and send files to the host PC.
 
 **P2P file sharing** — Click `⇄` to open the Share panel. Send to any device on the same network. Incoming files always prompt Accept/Decline and land in your Downloads folder.
 
-**Appearance** — 4 themes (Dark, Slate, Warm, Light), adjustable transparency, always-on-top toggle. Hotkey customizable in Settings.
+**Appearance** — 4 themes (Dark, Slate, Warm, Light), adjustable transparency, always-on-top toggle, and a dim-when-unfocused option. Hotkey is customizable in Settings. Resize the widget with the `75%/100%/125%/150%` button in the header.
 
 ---
 
@@ -76,7 +78,6 @@ Everything stays local. Nothing is sent to the cloud.
 ## Uninstall
 
 1. Right-click tray icon → Quit
-2. Run `uninstall.bat` as administrator
-3. Delete the Aside folder
-4. Delete `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Aside.lnk`
-5. Delete `%USERPROFILE%\.aside.json` and `%USERPROFILE%\.aside_media`
+2. Right-click `uninstall.bat` → **Run as administrator**
+
+The uninstaller stops the app, removes Python dependencies, clears firewall rules, removes the startup shortcut, and optionally deletes your saved data and the program folder.

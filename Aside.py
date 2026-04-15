@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Aside — Updated"""
 
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import json, os, threading, time, sys, traceback, socket, shutil, uuid, queue, copy, re, webbrowser
+import http.client as _http_client
+from tkinter import filedialog as _filedialog
 from http.server import BaseHTTPRequestHandler
 try:
     from http.server import ThreadingHTTPServer as ServerClass
 except ImportError:
     from http.server import HTTPServer as ServerClass
+
+from aside_browser import MobileHandler
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), "aside_error.log")
 def log_error(msg):
@@ -44,12 +47,17 @@ SIZE_PRESETS = [(225, 420), (300, 560), (375, 700), (450, 840)]
 SIZE_LABELS  = ["75%", "100%", "125%", "150%"]
 SHARE_PORT = 7843; DISCOVER_PORT = 7844; DEVICE_NAME = socket.gethostname()
 
-# ── Robust URL detection ─────────────────────────────────────────────────────
+WS_COLORS = {
+    "None": None, "Red": "#e05555", "Orange": "#e0943a", "Yellow": "#d4c44b",
+    "Green": "#5ddd5d", "Teal": "#4ecfcf", "Blue": "#5b9cf0", "Purple": "#a070e0", "Pink": "#e070a0",
+}
+
 _TLDS = (r'co\.uk|co\.jp|co\.kr|co\.in|co\.nz|co\.za|org\.uk|'
          r'com|org|net|io|dev|edu|gov|mil|int|'
          r'co|me|tv|gg|app|xyz|info|biz|pro|site|online|store|tech|'
          r'us|uk|ca|de|fr|jp|au|in|br|ru|it|es|nl|se|no|fi|dk|pl|cz|'
          r'ch|at|be|ie|pt|nz|za|mx|ar|cl|kr|cn|sg|hk|tw|my|th|id|vn|ae|il')
+
 URL_RE = re.compile(
     r'https?://[^\s<>]+'
     r'|www\.[^\s<>]+'
@@ -58,16 +66,12 @@ URL_RE = re.compile(
 )
 
 def _clean_url(u):
-    """Strip trailing punctuation unlikely to be part of a URL."""
-    while u and u[-1] in '.,;:!?)\'"»›':
-        u = u[:-1]
+    while u and u[-1] in '.,;:!?)\'"»›': u = u[:-1]
     return u
 
 def _normalize_url(u):
-    """Clean and ensure URL has a protocol for opening."""
     u = _clean_url(u)
-    if not re.match(r'https?://', u, re.IGNORECASE):
-        return 'https://' + u
+    if not re.match(r'https?://', u, re.IGNORECASE): return 'https://' + u
     return u
 
 THEMES = {
@@ -95,7 +99,8 @@ HINTS = {"goal":"Add a goal...","header_sm":"Small header...","header_lg":"BIG H
 def default_data():
     return {"position":None,"active_tab":"main","workspaces":{"main":{"name":"Today","goals":[]}},
             "app_rules":{},"completed":[],"settings":{"theme":"Dark","alpha":0.93,"hotkey":"ctrl+alt+g",
-            "always_on_top":True,"auto_show":True,"sync_enabled":False,"sync_port":7842}}
+            "always_on_top":True,"auto_show":True,"sync_enabled":False,"sync_port":7842,
+            "dim_enabled":False,"dim_alpha":0.80}}
 
 def load_data():
     try:
@@ -108,9 +113,14 @@ def load_data():
     except Exception: return default_data()
 
 def save_data(data):
-    try:
-        with open(DATA_FILE,"w") as f: json.dump(data,f,indent=2)
-    except Exception as e: log_error(f"save_data failed: {e}")
+    snapshot = copy.deepcopy(data)
+    def _write():
+        try:
+            with open(DATA_FILE, "w") as f:
+                json.dump(snapshot, f, indent=2)
+        except Exception as e:
+            log_error(f"save_data failed: {e}")
+    threading.Thread(target=_write, daemon=True).start()
 
 _LOCAL_IP = None
 def get_local_ip():
@@ -138,12 +148,10 @@ class ScrollFrame(tk.Frame):
     def _update_width(self, e): self.canvas.itemconfig(self._win, width=e.width)
     def _on_scroll(self, e): self.canvas.yview_scroll(int(-1*(e.delta/120)),"units")
     def reset_inner(self, bg):
-        """Destroy and recreate inner frame for a clean render pass."""
         self.canvas.delete(self._win)
         self.inner.destroy()
         self.inner = tk.Frame(self.canvas, bg=bg)
         self._win = self.canvas.create_window((0,0), window=self.inner, anchor="nw")
-        # Fix: Force newly created window to immediately match canvas width
         self.canvas.itemconfig(self._win, width=self.canvas.winfo_width())
         self.inner.bind("<Configure>", self._update_scroll)
         self.inner.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._on_scroll))
@@ -163,150 +171,6 @@ class Tooltip:
             except Exception: pass
             self._tip = None
 
-# ── Mobile HTML ───────────────────────────────────────────────────────────────
-MOBILE_HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Aside</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#0d0d0d;color:#d0d0d0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:800px;margin:0 auto;min-height:100vh;padding:0 10px}
-header{padding:14px 16px;background:#141414;display:flex;align-items:center;gap:10px;box-shadow:0 1px 10px rgba(0,0,0,0.5)}header h1{font-size:15px;color:#fff;letter-spacing:1px;flex:1}#sync-dot{font-size:11px;color:#5ddd5d}
-.tabs{display:flex;background:#141414;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tab{padding:10px 16px;font-size:12px;cursor:pointer;white-space:nowrap;color:#555;border-bottom:2px solid transparent;flex-shrink:0}.tab.active{color:#fff;border-bottom-color:#fff}
-.ws-label{padding:4px 16px;font-size:10px;color:#444;letter-spacing:2px;background:#0a0a0a}.goals{padding:4px 0 140px}.goal-row{display:flex;align-items:flex-start;padding:11px 16px;border-bottom:1px solid #181818;gap:12px}.goal-row.alt{background:#141414}
-.header-sm,.header-lg{background:#141414;padding:9px 16px;border-bottom:1px solid #1e1e1e}.header-sm .htxt{font-size:12px;font-weight:700;color:#fff}.header-lg .htxt{font-size:18px;font-weight:700;color:#fff}
-.circle{width:22px;height:22px;border-radius:50%;border:2px solid #333;cursor:pointer;flex-shrink:0;margin-top:2px}.circle:active{background:#5ddd5d;border-color:#5ddd5d}.goal-text{flex:1;font-size:14px;line-height:1.45}
-.goal-text.link{color:#5b9cf0;text-decoration:underline;cursor:pointer}
-.empty{text-align:center;padding:50px 20px;color:#333;font-size:16px;line-height:2}.bottom-bar{position:fixed;bottom:0;left:0;right:0;max-width:800px;margin:0 auto;background:#111318;box-shadow:0 -2px 10px rgba(0,0,0,0.5)}
-.add-bar{display:flex;padding:10px 12px 4px;gap:8px}.add-bar input{flex:1;background:#111;border:1px solid #222;color:#d0d0d0;font-size:15px;padding:10px 14px;border-radius:10px;outline:none}.add-bar input:focus{border-color:#444}
-.add-bar button{background:#5ddd5d;color:#000;border:none;width:42px;height:42px;border-radius:10px;font-size:22px;font-weight:700;cursor:pointer}
-.send-bar{display:flex;padding:4px 12px 10px;gap:8px}.send-bar label{flex:1;background:#111;border:1px solid #2a2f3a;color:#6b7280;font-size:13px;padding:9px 14px;border-radius:10px;cursor:pointer;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.send-bar label.ready{color:#d0d0d0;border-color:#4f8ef7;background:#1a1d24}.send-bar input[type=file]{display:none}.send-bar button{background:#4f8ef7;color:#fff;border:none;padding:0 18px;height:40px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer}
-.send-bar button:disabled{background:#222;color:#555}.send-section-title{font-size:9px;letter-spacing:1.5px;color:#4f8ef7;font-weight:700;padding:8px 12px 2px}#upload-progress{height:3px;background:#1e2230;margin:0 12px 6px;border-radius:2px;overflow:hidden;display:none}
-#upload-bar{height:100%;background:#4f8ef7;width:0;transition:width .2s}#upload-status{text-align:center;font-size:12px;padding:0 12px 6px;display:none}
-.files-section{padding:6px 12px 10px;border-top:1px solid #1e1e1e}.files-section h3{font-size:9px;letter-spacing:1.5px;color:#4f8ef7;margin-bottom:6px;font-weight:700}
-.file-row{display:flex;align-items:center;background:#1a1d24;border-radius:8px;padding:8px 12px;margin-bottom:4px;gap:10px}.file-row span{flex:1;font-size:12px;color:#d0d0d0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.file-row a{background:#3ecf6e;color:#000;text-decoration:none;font-size:11px;font-weight:700;padding:4px 12px;border-radius:6px}</style></head>
-<body><header><h1>&#11041; ASIDE</h1><span id="sync-dot">&#9679;</span></header><div class="tabs" id="tabs"></div><div class="ws-label" id="ws-label"></div><div class="goals" id="goals"></div>
-<div class="bottom-bar"><div class="add-bar"><input id="inp" placeholder="Add a goal..." autocomplete="off"><button onclick="addGoal()">+</button></div>
-<div style="border-top:1px solid #1e1e1e"><div class="send-section-title">&#8679; SEND FILE TO HOST</div><div class="send-bar"><label id="file-label" for="file-pick">Tap to choose a file</label>
-<input type="file" id="file-pick" onchange="fileChosen(this)"><button id="send-btn" disabled onclick="uploadFile()">Send</button></div><div id="upload-progress"><div id="upload-bar"></div></div><div id="upload-status"></div></div>
-<div class="files-section" id="files-section" style="display:none"><h3>&#8595; FILES FROM HOST</h3><div id="files-list"></div></div></div>
-<script>let state={workspaces:{},active_tab:"main"},activeTab="main",chosenFile=null;
-const TLDS='co\\.uk|co\\.jp|co\\.kr|co\\.in|co\\.nz|co\\.za|org\\.uk|com|org|net|io|dev|edu|gov|mil|int|co|me|tv|gg|app|xyz|info|biz|pro|site|online|store|tech|us|uk|ca|de|fr|jp|au|in|br|ru|it|es|nl|se|no|fi|dk|pl|cz|ch|at|be|ie|pt|nz|za|mx|ar|cl|kr|cn|sg|hk|tw|my|th|id|vn|ae|il';
-const urlRe=new RegExp('https?://[^\\s<>]+|www\\.[^\\s<>]+|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+(?:'+TLDS+')(?:/[^\\s<>]*)?','gi');
-function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
-function cleanUrl(u){while(u.length&&'.,;:!?)]\'"'.includes(u[u.length-1]))u=u.slice(0,-1);return u}
-function normUrl(u){u=cleanUrl(u);if(!/^https?:\/\//i.test(u))u='https://'+u;return u}
-function linkify(s){return esc(s).replace(urlRe,function(m){var c=cleanUrl(m),h=normUrl(c),trail=m.slice(c.length);return'<a href="'+h+'" target="_blank" rel="noopener" style="color:#5b9cf0;text-decoration:underline">'+esc(c)+'</a>'+esc(trail)})}
-async function load(){try{const r=await fetch("/api/state");if(!r.ok)throw 0;state=await r.json();if(!state.workspaces[activeTab])activeTab=state.active_tab||Object.keys(state.workspaces)[0];render();document.getElementById("sync-dot").style.color="#5ddd5d";}catch(e){document.getElementById("sync-dot").style.color="#555";}}
-function render(){const t=document.getElementById("tabs");t.innerHTML=Object.entries(state.workspaces).map(([k,ws])=>`<div class="tab${k===activeTab?" active":""}" onclick="switchTab('${k}')">${esc(ws.name)}</div>`).join("");
-const ws=state.workspaces[activeTab]||{name:"",goals:[]};document.getElementById("ws-label").textContent=ws.name.toUpperCase();const goals=ws.goals||[],rows=[];let alt=0;
-goals.forEach((g,ri)=>{if(g.done)return;if(g.type==="header"){rows.push(`<div class="header-${g.size||'sm'}"><span class="htxt">${esc(g.text)}</span></div>`);return;}
-if(g.type==="media"){let ic=g.media_type==="image"?"🖼️":g.media_type==="audio"?"🎵":g.media_type==="video"?"🎬":"📁";rows.push(`<div class="goal-row${alt++%2?" alt":""}"><div class="circle" onclick="complete(${ri})"></div><span class="goal-text" style="color:#4f8ef7">${ic} ${esc(g.filename)}</span></div>`);return;}
-const hasUrl=urlRe.test(g.text);urlRe.lastIndex=0;rows.push(`<div class="goal-row${alt++%2?" alt":""}"><div class="circle" onclick="complete(${ri})"></div><span class="goal-text${hasUrl?" link":""}">${linkify(g.text)}</span></div>`);});
-document.getElementById("goals").innerHTML=rows.length?rows.join(""):`<div class="empty">Nothing here.<br>Add a goal below.</div>`;}
-function switchTab(k){activeTab=k;render();}
-async function complete(ri){await fetch("/api/complete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspace:activeTab,index:ri})});load();}
-async function addGoal(){const inp=document.getElementById("inp"),text=inp.value.trim();if(!text)return;await fetch("/api/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspace:activeTab,text})});inp.value="";load();}
-function fileChosen(i){chosenFile=i.files[0]||null;const l=document.getElementById("file-label"),b=document.getElementById("send-btn");if(chosenFile){l.textContent=chosenFile.name;l.classList.add("ready");b.disabled=false;}else{l.textContent="Tap to choose a file";l.classList.remove("ready");b.disabled=true;}}
-async function uploadFile(){if(!chosenFile)return;const b=document.getElementById("send-btn"),p=document.getElementById("upload-progress"),bar=document.getElementById("upload-bar"),st=document.getElementById("upload-status"),fn=chosenFile.name;
-b.disabled=true;p.style.display="block";st.style.display="block";st.style.color="#4f8ef7";st.textContent="Waiting...";bar.style.width="0";const xhr=new XMLHttpRequest();xhr.open("POST","/api/upload");xhr.setRequestHeader("X-Filename",encodeURIComponent(fn));
-xhr.upload.onprogress=e=>{if(e.lengthComputable)bar.style.width=(e.loaded/e.total*100)+"%";};
-xhr.onload=()=>{const ok=xhr.status===200;bar.style.width="100%";bar.style.background=ok?"#3ecf6e":"#e05555";st.style.color=ok?"#3ecf6e":"#e05555";st.textContent=ok?`✓ ${fn}`:"✗ Failed";
-setTimeout(()=>{p.style.display="none";st.style.display="none";bar.style.width="0";bar.style.background="#4f8ef7";},4000);chosenFile=null;document.getElementById("file-pick").value="";
-document.getElementById("file-label").textContent="Tap to choose a file";document.getElementById("file-label").classList.remove("ready");b.disabled=true;};xhr.onerror=()=>{st.textContent="✗ Lost";b.disabled=false;};xhr.send(chosenFile);}
-document.getElementById("inp").addEventListener("keydown",e=>{if(e.key==="Enter")addGoal();});
-async function pollFiles(){try{const r=await fetch("/api/files");if(!r.ok)return;const d=await r.json(),s=document.getElementById("files-section"),l=document.getElementById("files-list");
-if(!d.files||!d.files.length){s.style.display="none";return;}s.style.display="block";l.innerHTML=d.files.map(f=>`<div class="file-row"><span>${esc(f)}</span><a href="/api/download/${encodeURIComponent(f)}" download="${esc(f)}">Save</a></div>`).join("");}catch(e){}}
-load();pollFiles();setInterval(load,4000);setInterval(pollFiles,3000);</script></body></html>"""
-
-class MobileHandler(BaseHTTPRequestHandler):
-    app=None;_pending={};_connected_ips={}
-    @classmethod
-    def push_file(cls,fp):
-        now=time.time();cls._pending={k:v for k,v in cls._pending.items() if now-v.get("ts",now)<600}
-        fn=os.path.basename(fp);key=fn;c=1
-        while key in cls._pending:b,e=os.path.splitext(fn);key=f"{b}_{c}{e}";c+=1
-        cls._pending[key]={"path":fp,"ts":now};return key
-    def log_message(self,*a):pass
-    def do_GET(self):
-        ip=self.client_address[0]
-        if ip not in MobileHandler._connected_ips:
-            try:n=socket.gethostbyaddr(ip)[0];n=n.split('.')[0] if n.endswith(('.local','.lan')) else n
-            except Exception:n=f"Browser ({ip})"
-            MobileHandler._connected_ips[ip]={"ts":time.time(),"name":n}
-        else:MobileHandler._connected_ips[ip]["ts"]=time.time()
-        if self.path=="/api/state":self._json(200,{"active_tab":self.app.data.get("active_tab"),"workspaces":self.app.data.get("workspaces",{})})
-        elif self.path=="/api/files":
-            now=time.time();MobileHandler._pending={k:v for k,v in MobileHandler._pending.items() if now-v.get("ts",now)<600}
-            self._json(200,{"files":list(MobileHandler._pending.keys())})
-        elif self.path.startswith("/api/download/"):
-            import urllib.parse as _up;key=_up.unquote(self.path[len("/api/download/"):]);entry=MobileHandler._pending.get(key)
-            fp=entry["path"] if isinstance(entry,dict) else entry
-            if not fp or not os.path.isfile(fp):self.send_response(404);self.end_headers();return
-            sz=os.path.getsize(fp);self.send_response(200);self.send_header("Content-Type","application/octet-stream")
-            self.send_header("Content-Disposition",f'attachment; filename="{key}"');self.send_header("Content-Length",sz);self.end_headers()
-            with open(fp,"rb") as f:
-                while True:
-                    ch=f.read(65536)
-                    if not ch:break
-                    self.wfile.write(ch)
-            MobileHandler._pending.pop(key,None)
-        elif self.path=="/":
-            body=MOBILE_HTML.encode();self.send_response(200);self.send_header("Content-Type","text/html; charset=utf-8")
-            self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
-        else:self._json(404,{"error":"not found"})
-    def do_POST(self):
-        if self.path=="/api/upload":self.do_POST_upload();return
-        length=int(self.headers.get("Content-Length",0))
-        try:body=json.loads(self.rfile.read(length) or b"{}")
-        except Exception:body={}
-        if self.path=="/api/add":
-            wk=body.get("workspace",self.app.data.get("active_tab"));txt=(body.get("text") or "").strip()
-            if txt and wk in self.app.data.get("workspaces",{}):
-                def do():self.app.data["workspaces"][wk]["goals"].append({"text":txt,"done":False});save_data(self.app.data);self.app._render_all()
-                self.app.root.after(0,do)
-            self._json(200,{"ok":True})
-        elif self.path=="/api/complete":
-            wk=body.get("workspace");idx=body.get("index")
-            if wk is not None and idx is not None:
-                def do():
-                    goals=self.app.data.get("workspaces",{}).get(wk,{}).get("goals",[])
-                    if 0<=idx<len(goals) and not goals[idx].get("done"):
-                        uid=self.app._ensure_uid(goals[idx]);self.app._complete_goal_in_ws(uid,wk)
-                self.app.root.after(0,do)
-            self._json(200,{"ok":True})
-        else:self._json(404,{"error":"not found"})
-    def do_POST_upload(self):
-        import urllib.parse as _up
-        try:fn=_up.unquote(self.headers.get("X-Filename","upload"))
-        except Exception:fn=self.headers.get("X-Filename","upload")
-        total=int(self.headers.get("Content-Length",0));sn=os.path.basename(fn) or "upload"
-        sip=self.client_address[0];sender=MobileHandler._connected_ips.get(sip,{}).get("name",sip)
-        if not self.app._ask_accept_file(sn,sender):self._json(403,{"error":"Declined"});return
-        dd=os.path.join(os.path.expanduser("~"),"Downloads");os.makedirs(dd,exist_ok=True)
-        dest=os.path.join(dd,sn);b,e=os.path.splitext(sn);c=1
-        while os.path.exists(dest):dest=os.path.join(dd,f"{b}_{c}{e}");c+=1
-        tid=f"m_{time.time():.3f}";panel=(self.app._share_win if self.app._share_win and self.app._share_win.alive else None)
-        if panel:self.app.root.after(0,lambda:panel._add_recv_row(tid,sn,total,f"📱 {sender}"))
-        try:
-            rcv=0;_lt=0.0
-            with open(dest,"wb") as f:
-                while rcv<total:
-                    ch=self.rfile.read(min(65536,total-rcv))
-                    if not ch:break
-                    f.write(ch);rcv+=len(ch)
-                    if panel:
-                        _n=time.time()
-                        if _n-_lt>=0.1:_lt=_n;b2=rcv;self.app.root.after(0,lambda b2=b2:panel._update_recv(tid,b2,total))
-            if panel:self.app.root.after(0,lambda:panel._finish_recv(tid,True,dest))
-            else:self.app.root.after(0,lambda:self.app._flash_share_btn(sn))
-            self._json(200,{"ok":True})
-        except Exception as ex:
-            log_error(f"upload fail: {ex}")
-            if panel:self.app.root.after(0,lambda:panel._finish_recv(tid,False,None))
-            self._json(500,{"error":str(ex)})
-    def _json(self,code,obj):
-        body=json.dumps(obj).encode();self.send_response(code);self.send_header("Content-Type","application/json")
-        self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
-
-
 class Aside:
     def __init__(self):
         self.data = load_data()
@@ -319,6 +183,11 @@ class Aside:
         self._selected_uids = set(); self._clipboard_goals = []
         self._drag_active = False; self._drag_uid = None; self._drag_ghost = None; self._drop_line = None
         self._drag_pending_uid = None; self._drag_press_x = 0; self._drag_press_y = 0
+        self._snooze_until = 0; self._snooze_status_lbl = None; self._render_job = None
+
+        self._watch_active = threading.Event()
+        self._watch_active.set()
+        self._prev_snooze_state = False
 
         if HAS_DND: self.root = TkinterDnD.Tk()
         else: self.root = tk.Tk()
@@ -328,6 +197,8 @@ class Aside:
         if HAS_DND: self.root.drop_target_register(DND_FILES); self.root.dnd_bind('<<Drop>>',self._on_drop)
         self.root.bind('<Control-v>',self._on_paste)
         self._restore_position(); self._build_ui()
+        self.root.bind("<FocusIn>", self._on_focus_in)
+        self.root.bind("<FocusOut>", self._on_focus_out)
         self.root.withdraw(); self.visible = False
         try: self._setup_tray()
         except Exception as e: log_error(f"tray fail: {e}")
@@ -337,7 +208,14 @@ class Aside:
             threading.Thread(target=self._app_watch_loop,daemon=True).start()
             self.root.after(200,self._poll_app_switch_queue)
             self.root.after(600,self._initial_app_check)
+        self._tick_snooze()
         self.root.protocol("WM_DELETE_WINDOW",self._toggle_visibility)
+
+    def save(self):
+        save_data(self.data)
+
+    def log_error(self, msg):
+        log_error(msg)
 
     @property
     def T(self): return THEMES.get(self.data["settings"].get("theme","Dark"),THEMES["Dark"])
@@ -345,16 +223,94 @@ class Aside:
     def _ensure_uid(self,g):
         if '_uid' not in g: g['_uid']=uuid.uuid4().hex[:12]
         return g['_uid']
+
     def _find_goal_by_uid(self,uid,wk=None):
         if wk is None:wk=self.data["active_tab"]
         for g in self.data["workspaces"].get(wk,{}).get("goals",[]):
             if g.get('_uid')==uid: return g
         return None
+
     def _find_goal_index_by_uid(self,uid,wk=None):
         if wk is None:wk=self.data["active_tab"]
         for i,g in enumerate(self.data["workspaces"].get(wk,{}).get("goals",[])):
             if g.get('_uid')==uid: return i
         return -1
+
+    def _schedule_render(self):
+        if self._render_job is not None:
+            try: self.root.after_cancel(self._render_job)
+            except Exception: pass
+        self._render_job = self.root.after(60, self._do_render)
+
+    def _do_render(self):
+        self._render_job = None
+        self._render_all()
+
+    def _is_snoozed(self):
+        return time.time() < self._snooze_until
+
+    def _set_snooze(self, seconds):
+        self._snooze_until = time.time() + seconds
+        self._watch_active.clear()
+        self._update_snooze_indicator()
+
+    def _clear_snooze(self):
+        self._snooze_until = 0
+        self._watch_active.set()
+        self._update_snooze_indicator()
+
+    def _update_snooze_indicator(self):
+        if hasattr(self, '_snooze_status_lbl') and self._snooze_status_lbl:
+            try:
+                if self._is_snoozed():
+                    remain = self._snooze_until - time.time()
+                    self._snooze_status_lbl.configure(text=f"Snoozed — {self._fmt_snooze(remain)} remaining", fg=S["accent"])
+                else:
+                    self._snooze_status_lbl.configure(text="Not snoozed", fg=S["mute"])
+            except Exception: pass
+
+    def _fmt_snooze(self, secs):
+        secs = max(0, int(secs))
+        if secs >= 3600:
+            h = secs // 3600; m = (secs % 3600) // 60
+            return f"{h}h{m:02d}m" if m else f"{h}h"
+        elif secs >= 60: return f"{secs // 60}m"
+        else: return "<1m"
+
+    def _tick_snooze(self):
+        now_snoozed = self._is_snoozed()
+        if self._prev_snooze_state and not now_snoozed:
+            self._watch_active.set()
+        self._prev_snooze_state = now_snoozed
+        self._update_snooze_indicator()
+        self.root.after(30000, self._tick_snooze)
+
+    def _on_focus_in(self, event=None):
+        if not self.data["settings"].get("dim_enabled", False): return
+        normal = self.data["settings"].get("alpha", 0.93)
+        self.root.attributes("-alpha", normal)
+
+    def _on_focus_out(self, event=None):
+        if not self.data["settings"].get("dim_enabled", False): return
+        self.root.after(120, self._apply_dim)
+
+    def _apply_dim(self):
+        try:
+            fw = self.root.focus_get()
+            if fw is not None: return
+        except Exception: pass
+        normal = self.data["settings"].get("alpha", 0.93)
+        dim = min(0.60, normal)
+        self.root.attributes("-alpha", dim)
+
+    def _sync_dim_to_focus(self):
+        if not self.data["settings"].get("dim_enabled", False): return
+        try:
+            fw = self.root.focus_get()
+            normal = self.data["settings"].get("alpha", 0.93)
+            if fw is not None: self.root.attributes("-alpha", normal)
+            else: self.root.attributes("-alpha", min(0.60, normal))
+        except Exception: pass
 
     def _ask_accept_file(self,filename,sender):
         result=[False];evt=threading.Event();dlg_ref=[]
@@ -376,52 +332,76 @@ class Aside:
             return False
         return result[0]
 
-    # ── Media ─────────────────────────────────────────────────────────────────
     def _browse_and_add_file(self,event=None):
-        from tkinter import filedialog
-        fps=filedialog.askopenfilenames(parent=self.root,title="Attach files")
+        fps=_filedialog.askopenfilenames(parent=self.root,title="Attach files")
         if fps:
             for fp in fps: self._process_dropped_file(fp)
-            self._render_all();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
+
     def _on_paste(self,event=None):
         if self._entry_focused():return
         if self._clipboard_goals:self._paste_goals();return "break"
         try:
             img=ImageGrab.grabclipboard()
             if img:
-                fn=f"clipboard_{uuid.uuid4().hex[:8]}.png";fp=os.path.join(MEDIA_DIR,fn)
+                fn=f"clipboard_{uuid.uuid4().hex[:8]}.png"; fp=os.path.join(MEDIA_DIR,fn)
                 if isinstance(img,list):
-                    for f in img:self._process_dropped_file(f)
-                else:img.save(fp,"PNG");self._add_media_goal("image",fn,dest_path=fp)
-        except Exception as e:log_error(f"Paste: {e}")
+                    for f in img: self._process_dropped_file(f)
+                else:
+                    desc = simpledialog.askstring("Attachment Note","Description (blank for none):",parent=self.root)
+                    if desc is None: return "break"
+                    def _save_and_add(img=img, fp=fp, fn=fn, desc=desc):
+                        try:
+                            img.save(fp, "PNG")
+                            item = {"type":"media","media_type":"image","filename":fn,"text":desc.strip() if desc else "","done":False}
+                            self._ensure_uid(item)
+                            def _finish():
+                                self._current_goals().append(item)
+                                self.save()
+                                self._schedule_render()
+                                self.root.after(50, lambda: self.scroll.canvas.yview_moveto(1.0))
+                            self.root.after(0, _finish)
+                        except Exception as e: log_error(f"Paste save: {e}")
+                    threading.Thread(target=_save_and_add, daemon=True).start()
+        except Exception as e: log_error(f"Paste: {e}")
         return "break"
+
     def _on_copy(self,event=None):
         if self._entry_focused():return
         if self._selected_uids:self._copy_selected();return "break"
+
     def _on_drop(self,event):
-        for fp in self.root.tk.splitlist(event.data):self._process_dropped_file(fp)
-        self._render_all();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
+        for fp in self.root.tk.splitlist(event.data):
+            self._process_dropped_file(fp)
+
     def _process_dropped_file(self,fp):
-        if not os.path.isfile(fp):return
-        fn=os.path.basename(fp);b,ext=os.path.splitext(fn);dp=os.path.join(MEDIA_DIR,fn);c=1
-        while os.path.exists(dp):dp=os.path.join(MEDIA_DIR,f"{b}_{c}{ext}");fn=f"{b}_{c}{ext}";c+=1
-        shutil.copy(fp,dp);el=ext.lower()
-        if el in ['.png','.jpg','.jpeg','.gif','.bmp','.webp']:mt="image"
-        elif el in ['.mp3','.wav','.ogg','.flac']:mt="audio"
-        elif el in ['.mp4','.mkv','.avi','.mov']:mt="video"
-        elif el=='.pdf':mt="pdf"
-        else:mt="file"
-        self._add_media_goal(mt,fn,dest_path=dp)
-    def _add_media_goal(self,mt,fn,dest_path=None):
-        desc=simpledialog.askstring("Attachment Note","Description (blank for none):",parent=self.root)
-        if desc is None:
-            if dest_path and os.path.exists(dest_path):
-                try:os.remove(dest_path)
-                except Exception:pass
-            return
-        item={"type":"media","media_type":mt,"filename":fn,"text":desc.strip() if desc else "","done":False}
-        self._ensure_uid(item);self._current_goals().append(item);save_data(self.data)
-        self._render_all();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
+        if not os.path.isfile(fp): return
+        fn=os.path.basename(fp); b,ext=os.path.splitext(fn)
+        dp=os.path.join(MEDIA_DIR,fn); c=1
+        while os.path.exists(dp): dp=os.path.join(MEDIA_DIR,f"{b}_{c}{ext}"); fn=f"{b}_{c}{ext}"; c+=1
+        el=ext.lower()
+        if el in ['.png','.jpg','.jpeg','.gif','.bmp','.webp']: mt="image"
+        elif el in ['.mp3','.wav','.ogg','.flac']: mt="audio"
+        elif el in ['.mp4','.mkv','.avi','.mov']: mt="video"
+        elif el=='.pdf': mt="pdf"
+        else: mt="file"
+
+        desc = simpledialog.askstring("Attachment Note","Description (blank for none):",parent=self.root)
+        if desc is None: return
+
+        def _copy_and_add(fp=fp, dp=dp, fn=fn, mt=mt, desc=desc):
+            try:
+                shutil.copy(fp, dp)
+                item = {"type":"media","media_type":mt,"filename":fn,"text":desc.strip() if desc else "","done":False}
+                self._ensure_uid(item)
+                def _finish():
+                    self._current_goals().append(item)
+                    self.save()
+                    self._schedule_render()
+                    self.root.after(50, lambda: self.scroll.canvas.yview_moveto(1.0))
+                self.root.after(0, _finish)
+            except Exception as e: log_error(f"File copy failed: {e}")
+        threading.Thread(target=_copy_and_add, daemon=True).start()
+
     def _show_image_popup(self,fp):
         if not os.path.exists(fp):return
         top=tk.Toplevel(self.root);top.configure(bg="#000");top.attributes("-topmost",True);top.overrideredirect(True)
@@ -433,12 +413,15 @@ class Aside:
         except Exception:top.destroy()
 
     def _current_wh(self): return SIZE_PRESETS[max(0,min(self._size_idx,len(SIZE_PRESETS)-1))]
+
     def _restore_position(self):
         pos=self.data.get("position");cw,ch=self._current_wh()
         if pos:x,y=pos
         else:x=self.root.winfo_screenwidth()-cw-28;y=(self.root.winfo_screenheight()-ch)//2
         self.root.geometry(f"{cw}x{ch}+{x}+{y}")
-    def _save_position(self):self.data["position"]=[self.root.winfo_x(),self.root.winfo_y()];save_data(self.data)
+
+    def _save_position(self):
+        self.data["position"]=[self.root.winfo_x(),self.root.winfo_y()];self.save()
 
     def _prune_image_cache(self):
         stale = []
@@ -446,18 +429,26 @@ class Aside:
             base_fn = key[:-4] if key.endswith("_pdf") else key
             if not os.path.exists(os.path.join(MEDIA_DIR, base_fn)):
                 stale.append(key)
-        for k in stale:
-            del self._image_cache[k]
+        for k in stale: del self._image_cache[k]
 
     def _get_cached_image(self, key, loader_fn):
         if key not in self._image_cache:
             photo = loader_fn()
-            if photo is None:
-                return None
+            if photo is None: return None
             self._image_cache[key] = photo
         return self._image_cache[key]
 
-    # ── Build UI ──────────────────────────────────────────────────────────────
+    def _ws_color(self, wk=None):
+        if wk is None: wk = self.data["active_tab"]
+        return self.data["workspaces"].get(wk, {}).get("color", None)
+
+    def _set_ws_color(self, wk, color):
+        ws = self.data["workspaces"].get(wk)
+        if not ws: return
+        if color: ws["color"] = color
+        else: ws.pop("color", None)
+        self.save(); self._refresh_tabs(); self._schedule_render()
+
     def _build_ui(self):
         t=self.T
         self.header=tk.Frame(self.root,bg=t["bg_header"],height=42,cursor="fleur");self.header.pack(fill="x");self.header.pack_propagate(False)
@@ -515,7 +506,10 @@ class Aside:
     def _full_redraw(self):
         for w in self.root.winfo_children():w.destroy()
         self.comp_open=False;self._input_mode="goal";self._selected_uids=set();self._clipboard_goals=[]
-        self._drag_active=False;self._drag_pending_uid=None;self.root.configure(bg=self.T["bg"]);self._build_ui()
+        self._drag_active=False;self._drag_pending_uid=None;self._render_job=None
+        self.root.configure(bg=self.T["bg"]);self._build_ui()
+        self.root.bind("<FocusIn>", self._on_focus_in)
+        self.root.bind("<FocusOut>", self._on_focus_out)
 
     def _on_escape(self,event=None):self._clear_selection();self._clipboard_goals=[]
 
@@ -525,12 +519,16 @@ class Aside:
         elif self._input_mode=="header_sm":self.mode_btn.configure(text="H",fg=t["check_on"],font=(FONT,11,"bold"))
         else:self.mode_btn.configure(text="H",fg=t["tab_act"],font=(FONT,14,"bold"))
         if self._hint_active:self.entry_var.set(HINTS[self._input_mode])
+
     def _current_hint(self):return HINTS.get(self._input_mode,HINTS["goal"])
+
     def _hint_show(self,_=None):
         if not self.entry_var.get().strip():
             self._hint_active=True;self.entry.configure(fg=self.T["text_hint"]);self.entry_var.set(self._current_hint())
+
     def _hint_clear(self,_=None):
         if self._hint_active:self._hint_active=False;self.entry_var.set("");self.entry.configure(fg=self.T["text"])
+
     def _on_entry_changed(self,*_):
         if self._hint_active or getattr(self,'_clearing_hint',False):return
         val=self.entry_var.get();hint=self._current_hint()
@@ -547,26 +545,32 @@ class Aside:
                 self._hint_active = False; self.entry.configure(fg=self.T["text"])
         except Exception: pass
 
-    # ── Tabs ──────────────────────────────────────────────────────────────────
     def _refresh_tabs(self):
         t=self.T
         for w in self.tab_bar.winfo_children():w.destroy()
         for idx,(key,ws) in enumerate(self.data["workspaces"].items()):
             active=(key==self.data["active_tab"]);nh=f"  Ctrl+{idx+1}" if idx<9 else ""
-            lbl=tk.Label(self.tab_bar,text=ws["name"],bg=t["bg_header"],fg=t["tab_act"] if active else t["tab_idle"],
+            wsc = ws.get("color", None)
+            fg_active = wsc if wsc else t["tab_act"]
+            lbl=tk.Label(self.tab_bar,text=ws["name"],bg=t["bg_header"],fg=fg_active if active else t["tab_idle"],
                 font=(FONT,8,"bold" if active else "normal"),cursor="hand2",padx=10,pady=8);lbl.pack(side="left")
             lbl.bind("<Button-1>",lambda e,k=key:self._switch_tab(k));lbl.bind("<Button-3>",lambda e,k=key:self._tab_context_menu(e,k))
             lbl.bind("<MouseWheel>",lambda e:self.tab_canvas.xview_scroll(int(-1*(e.delta/120)),"units"))
             ct=len([g for g in ws.get("goals",[]) if not g.get("done") and g.get("type")!="header"])
             Tooltip(lbl,f"{ws['name']}  —  {ct} active{nh}")
-            if active:tk.Frame(self.tab_bar,bg=t["tab_act"],height=2,width=max(len(ws["name"])*7,20)).place(in_=lbl,relx=0,rely=1.0,anchor="sw")
+            if active:
+                uline_color = wsc if wsc else t["tab_act"]
+                tk.Frame(self.tab_bar,bg=uline_color,height=2,width=max(len(ws["name"])*7,20)).place(in_=lbl,relx=0,rely=1.0,anchor="sw")
         add_tab=tk.Label(self.tab_bar,text="＋",bg=t["bg_header"],fg=t["del_idle"],font=(FONT,10),cursor="hand2",padx=8);add_tab.pack(side="left")
         add_tab.bind("<Button-1>",lambda e:self._new_workspace());add_tab.bind("<Enter>",lambda e:add_tab.configure(fg=t["text_mute"]));add_tab.bind("<Leave>",lambda e:add_tab.configure(fg=t["del_idle"]))
         Tooltip(add_tab,"New workspace  (Ctrl+T)")
-    def _switch_tab(self,key):self.data["active_tab"]=key;save_data(self.data);self._selected_uids=set();self._refresh_tabs();self._render_all()
+
+    def _switch_tab(self,key):self.data["active_tab"]=key;self.save();self._selected_uids=set();self._refresh_tabs();self._schedule_render()
+
     def _switch_to_ws_by_number(self,n):
         keys=list(self.data["workspaces"].keys())
         if n<=len(keys):self._switch_tab(keys[n-1])
+
     def _new_workspace(self):
         t=self.T;overlay=tk.Frame(self.root,bg=t["bg_header"]);overlay.place(relx=0,rely=0,relwidth=1.0,height=34,y=self.header.winfo_height()+1);overlay.lift()
         var=tk.StringVar();ent=tk.Entry(overlay,textvariable=var,bg=t["bg_input"],fg=t["text"],insertbackground=t["text"],relief="flat",font=(FONT,9),bd=0)
@@ -575,27 +579,32 @@ class Aside:
             name=var.get().strip();overlay.destroy()
             if not name or name=="Workspace name…":return
             key=f"ws_{len(self.data['workspaces'])}_{name.lower().replace(' ','_')}";self.data["workspaces"][key]={"name":name,"goals":[]}
-            self.data["active_tab"]=key;save_data(self.data);self._refresh_tabs();self._render_all();self._sync_settings()
+            self.data["active_tab"]=key;self.save();self._refresh_tabs();self._schedule_render();self._sync_settings()
         ent.bind("<Return>",confirm);ent.bind("<Escape>",lambda e:overlay.destroy());ent.bind("<FocusOut>",lambda e:overlay.destroy())
         ok=tk.Label(overlay,text="OK",bg=t["check_on"],fg="#000",font=(FONT,8,"bold"),padx=8,cursor="hand2");ok.pack(side="right",padx=(0,6),pady=6);ok.bind("<Button-1>",confirm)
+
     def _entry_focused(self):
         try:return self.root.focus_get() is self.entry
         except Exception:return False
+
     def _focus_entry(self,event=None):self._hint_clear();self.entry.focus_set();return "break"
+
     def _tab_next(self):
         keys=list(self.data["workspaces"].keys())
         if len(keys)<2:return "break"
         idx=keys.index(self.data["active_tab"]) if self.data["active_tab"] in keys else 0
         self._switch_tab(keys[(idx+1)%len(keys)]);return "break"
+
     def _current_goals(self):return self.data["workspaces"].get(self.data["active_tab"],{}).get("goals",[])
 
-    # ── Selection / Copy / Paste ──────────────────────────────────────────────
     def _toggle_select(self,uid):
         if uid in self._selected_uids:self._selected_uids.discard(uid)
         else:self._selected_uids.add(uid)
         self._update_selection_visuals()
+
     def _clear_selection(self):
         if self._selected_uids:self._selected_uids=set();self._update_selection_visuals()
+
     def _update_selection_visuals(self):
         t=self.T;sel=t.get("sel_bg",t["border"])
         for uid,entry in self._row_widget_map.items():
@@ -603,6 +612,7 @@ class Aside:
             for w in entry.get("recolor",[]):
                 try:w.configure(bg=bg)
                 except Exception:pass
+
     def _copy_selected(self):
         goals=self._current_goals();self._clipboard_goals=[]
         for g in goals:
@@ -610,23 +620,23 @@ class Aside:
             if uid and uid in self._selected_uids:
                 c=copy.deepcopy(g);c.pop('_uid',None);c.pop('done',None);self._clipboard_goals.append(c)
         self._clear_selection()
+
     def _paste_goals(self):
         if not self._clipboard_goals:return
         for g in self._clipboard_goals:
             ng=copy.deepcopy(g);ng['_uid']=uuid.uuid4().hex[:12];ng['done']=False;self._current_goals().append(ng)
-        save_data(self.data);self._render_all();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
+        self.save();self._schedule_render();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
 
-    # ── Render ────────────────────────────────────────────────────────────────
     def _render_all(self):
         t=self.T
         self._prune_image_cache()
         self._row_widget_map={};self._render_order=[]
-        # Recreate inner frame cleanly
         self.scroll.reset_inner(t["bg"])
         tab=self.data["active_tab"];ws=self.data["workspaces"].get(tab,{});goals=ws.get("goals",[])
         name=ws.get("name","").upper();mc=max(8,(self._current_wh()[0]-140)//8)
         if len(name)>mc:name=name[:mc-1]+"…"
-        self.ws_label.configure(text=name,fg=t["text_mute"])
+        wsc = ws.get("color", None)
+        self.ws_label.configure(text=name,fg=wsc if wsc else t["text_mute"])
         has_vis=any(not g.get("done") for g in goals);act_ct=sum(1 for g in goals if not g.get("done") and g.get("type")!="header")
         if not has_vis:
             tk.Label(self.scroll.inner,text="Nothing here.\nAdd a goal below.",bg=t["bg"],fg=t["text_hint"],font=(FONT,10),justify="center").pack(expand=True,pady=36)
@@ -691,38 +701,70 @@ class Aside:
             nlbl.bind("<Enter>",lambda e:nlbl.configure(fg=t["tab_act"]));nlbl.bind("<Leave>",lambda e:nlbl.configure(fg=t["text"]))
             d=tk.Label(top,text="×",bg=cbg,fg=t["del_idle"],font=(FONT,13),cursor="hand2");d.pack(side="right",padx=(4,0))
             d.bind("<Button-1>",lambda e,u=uid:self._delete_goal(u));d.bind("<Enter>",lambda e,b=d:b.configure(fg=t["del_hov"]));d.bind("<Leave>",lambda e,b=d:b.configure(fg=t["del_idle"]))
+
             if mt=="image" and os.path.exists(fp):
                 imf=tk.Frame(inner,bg=cbg);imf.pack(fill="x",padx=10,pady=(0,10))
-                try:
-                    def _load_img(fp=fp):
-                        img=Image.open(fp)
-                        try:img.thumbnail((280,200),Image.Resampling.LANCZOS)
-                        except:img.thumbnail((280,200),Image.ANTIALIAS)
-                        return ImageTk.PhotoImage(img)
-                    photo=self._get_cached_image(fn, _load_img)
-                    if photo:
-                        il=tk.Label(imf,image=photo,bg="#000",cursor="hand2");il.image=photo;il.pack(pady=2);il.bind("<Button-1>",lambda e,f=fp:self._show_image_popup(f))
-                    else:
-                        tk.Label(imf,text="(Preview unavailable)",bg=cbg,fg=t["text_mute"],font=(FONT,8)).pack()
-                except:tk.Label(imf,text="(Preview unavailable)",bg=cbg,fg=t["text_mute"],font=(FONT,8)).pack()
+                if fn in self._image_cache:
+                    photo=self._image_cache[fn]
+                    il=tk.Label(imf,image=photo,bg="#000",cursor="hand2");il.image=photo;il.pack(pady=2)
+                    il.bind("<Button-1>",lambda e,f=fp:self._show_image_popup(f))
+                else:
+                    ph=tk.Label(imf,text="⏳ Loading…",bg=cbg,fg=t["text_mute"],font=(FONT,8));ph.pack(pady=8)
+                    def _load_img(fp=fp,fn=fn,imf=imf,ph=ph):
+                        try:
+                            img=Image.open(fp)
+                            try:img.thumbnail((280,200),Image.Resampling.LANCZOS)
+                            except:img.thumbnail((280,200),Image.ANTIALIAS)
+                            def _apply(img=img,fn=fn,imf=imf,ph=ph,fp=fp):
+                                try:
+                                    photo=ImageTk.PhotoImage(img)
+                                    self._image_cache[fn]=photo
+                                    ph.destroy()
+                                    il=tk.Label(imf,image=photo,bg="#000",cursor="hand2")
+                                    il.image=photo;il.pack(pady=2)
+                                    il.bind("<Button-1>",lambda e,f=fp:self._show_image_popup(f))
+                                    self.scroll._update_scroll()
+                                except Exception:pass
+                            self.root.after(0,_apply)
+                        except Exception:
+                            self.root.after(0,lambda ph=ph:ph.configure(text="(Preview unavailable)") if ph.winfo_exists() else None)
+                    threading.Thread(target=_load_img,daemon=True).start()
+
             elif mt=="pdf" and os.path.exists(fp):
                 pf=tk.Frame(inner,bg=cbg);pf.pack(fill="x",padx=10,pady=(0,10))
-                try:
-                    cache_key=fn+"_pdf"
-                    def _load_pdf(fp=fp):
-                        import fitz;from io import BytesIO;doc=fitz.open(fp);pix=doc[0].get_pixmap(matrix=fitz.Matrix(0.6,0.6))
-                        img=Image.open(BytesIO(pix.tobytes("png")))
-                        try:img.thumbnail((280,360),Image.Resampling.LANCZOS)
-                        except:img.thumbnail((280,360),Image.ANTIALIAS)
-                        p=ImageTk.PhotoImage(img);doc.close();return p
-                    photo=self._get_cached_image(cache_key, _load_pdf)
-                    if photo:
-                        il=tk.Label(pf,image=photo,bg="#1a1a1a",cursor="hand2");il.image=photo;il.pack(pady=2)
-                        il.bind("<Button-1>",lambda e,f=fp:os.startfile(f) if hasattr(os,'startfile') else None)
-                    else:
-                        tk.Label(pf,text="(PDF preview unavailable)",bg=cbg,fg=t["text_mute"],font=(FONT,8)).pack()
-                except ImportError:tk.Label(pf,text="pip install pymupdf",bg=cbg,fg=t["text_mute"],font=(FONT,8)).pack(pady=4)
-                except:tk.Label(pf,text="(PDF preview unavailable)",bg=cbg,fg=t["text_mute"],font=(FONT,8)).pack()
+                cache_key=fn+"_pdf"
+                if cache_key in self._image_cache:
+                    photo=self._image_cache[cache_key]
+                    il=tk.Label(pf,image=photo,bg="#1a1a1a",cursor="hand2");il.image=photo;il.pack(pady=2)
+                    il.bind("<Button-1>",lambda e,f=fp:os.startfile(f) if hasattr(os,'startfile') else None)
+                else:
+                    ph=tk.Label(pf,text="⏳ Loading PDF…",bg=cbg,fg=t["text_mute"],font=(FONT,8));ph.pack(pady=8)
+                    def _load_pdf(fp=fp,fn=fn,pf=pf,ph=ph,cache_key=cache_key):
+                        try:
+                            import fitz
+                            from io import BytesIO
+                            doc=fitz.open(fp);pix=doc[0].get_pixmap(matrix=fitz.Matrix(0.6,0.6))
+                            img=Image.open(BytesIO(pix.tobytes("png")))
+                            try:img.thumbnail((280,360),Image.Resampling.LANCZOS)
+                            except:img.thumbnail((280,360),Image.ANTIALIAS)
+                            doc.close()
+                            def _apply(img=img,cache_key=cache_key,pf=pf,ph=ph,fp=fp):
+                                try:
+                                    photo=ImageTk.PhotoImage(img)
+                                    self._image_cache[cache_key]=photo
+                                    ph.destroy()
+                                    il=tk.Label(pf,image=photo,bg="#1a1a1a",cursor="hand2")
+                                    il.image=photo;il.pack(pady=2)
+                                    il.bind("<Button-1>",lambda e,f=fp:os.startfile(f) if hasattr(os,'startfile') else None)
+                                    self.scroll._update_scroll()
+                                except Exception:pass
+                            self.root.after(0,_apply)
+                        except ImportError:
+                            self.root.after(0,lambda ph=ph:ph.configure(text="pip install pymupdf") if ph.winfo_exists() else None)
+                        except Exception:
+                            self.root.after(0,lambda ph=ph:ph.configure(text="(PDF preview unavailable)") if ph.winfo_exists() else None)
+                    threading.Thread(target=_load_pdf,daemon=True).start()
+
             desc=goal.get("text","");dlbl=None
             if desc:dlbl=tk.Label(inner,text=desc,bg=cbg,fg=t["text"],font=(FONT,10),justify="left",wraplength=220);dlbl.pack(anchor="w",padx=10,pady=(0,10))
             def _mctx(e,u=uid):
@@ -736,7 +778,6 @@ class Aside:
             self._row_widget_map[uid]={"row_type":"media","frame":card,"sep":None,"orig_bg":cbg,"recolor":[card,inner,top,nlbl,d],"label":dlbl,"inner":inner}
             return
 
-        # ── Goal ──────────────────────────────────────────────────────────────
         all_g=self._current_goals();vis_idx=sum(1 for g in all_g[:index] if not g.get("done") and g.get("type") not in ("header","media"))
         orig_bg=t["bg_row2"] if vis_idx%2==1 else t["bg_row"];bg=t.get("sel_bg",t["border"]) if uid in self._selected_uids else orig_bg
         row=tk.Frame(self.scroll.inner,bg=bg);row.pack(fill="x")
@@ -801,31 +842,35 @@ class Aside:
             dl=tk.Label(ir,text="×",bg=bg,fg=t["del_idle"],font=(FONT,11),cursor="hand2");dl.pack(side="right")
             dl.bind("<Button-1>",lambda e,gi=g:self._remove_completed(gi));dl.bind("<Enter>",lambda e,b=dl:b.configure(fg=t["del_hov"]));dl.bind("<Leave>",lambda e,b=dl:b.configure(fg=t["del_idle"]))
             tk.Frame(inner,bg=t["border"],height=1).pack(fill="x")
+
     def _toggle_completed(self):
         self.comp_open=not self.comp_open;self.comp_arrow.configure(text="▼" if self.comp_open else "▶")
         if self.comp_open:
             _,wh=self._current_wh();self.comp_frame.configure(height=min(160,wh//3));self.comp_frame.pack_propagate(False)
             self.comp_frame.pack(fill="x",after=self.comp_bar);self._render_completed_section()
         else:self.comp_frame.pack_forget()
+
     def _update_count(self,active,total):self.count_lbl.configure(fg=self.T["text_hint"],text=f"{total-active}/{total}" if total else "")
 
-    # ── Goal actions ──────────────────────────────────────────────────────────
     def _complete_goal(self,uid):self._complete_goal_in_ws(uid,self.data["active_tab"])
+    
     def _complete_goal_in_ws(self,uid,wk):
         goals=self.data["workspaces"].get(wk,{}).get("goals",[]);index=-1
         for i,g in enumerate(goals):
             if g.get('_uid')==uid:index=i;break
         if index<0:return
         g=goals.pop(index);g["done"]=True;g["workspace"]=wk;g["completed_at"]=time.time()
-        self.data.setdefault("completed",[]).insert(0,g);self.data["completed"]=self.data["completed"][:200];save_data(self.data)
-        if wk==self.data["active_tab"]:self._render_all()
+        self.data.setdefault("completed",[]).insert(0,g);self.data["completed"]=self.data["completed"][:200];self.save()
+        if wk==self.data["active_tab"]:self._schedule_render()
         if self.comp_open:self._render_completed_section()
+
     def _restore_goal(self,go):
         self.data["completed"]=[c for c in self.data["completed"] if c is not go]
         wk=go.pop("workspace",self.data["active_tab"]);go.pop("done",None);go.pop("completed_at",None)
         ws=self.data["workspaces"].get(wk)
         if ws is None:wk=self.data["active_tab"];ws=self.data["workspaces"].setdefault(wk,{"name":"Today","goals":[]})
-        ws.setdefault("goals",[]).append(go);save_data(self.data);self._render_all();self._render_completed_section()
+        ws.setdefault("goals",[]).append(go);self.save();self._schedule_render();self._render_completed_section()
+
     def _delete_goal(self,uid):
         goals=self._current_goals();idx=self._find_goal_index_by_uid(uid)
         if idx<0:return
@@ -837,10 +882,10 @@ class Aside:
                 except Exception:pass
             self._image_cache.pop(fn, None)
             self._image_cache.pop(fn + "_pdf", None)
-        goals.pop(idx);save_data(self.data);self._selected_uids.discard(uid);self._render_all()
+        goals.pop(idx);self.save();self._selected_uids.discard(uid);self._schedule_render()
+
     def _copy_goal_text(self,text):self.root.clipboard_clear();self.root.clipboard_append(text)
 
-    # ── Inline edit — multiline Text widget ───────────────────────────────────
     def _edit_goal_inline(self,uid):
         ei=self._row_widget_map.get(uid);goal=self._find_goal_by_uid(uid)
         if not ei or not goal:return
@@ -853,11 +898,9 @@ class Aside:
         lbl.pack_forget()
         _done=[False]
 
-        # Fix: Estimate chars per line from available pixel width
         cpl = max(12, (self._current_wh()[0] - 90) // 8)
         est_h = max(1, min((len(current) + cpl - 1) // cpl, 8))
 
-        # width=cpl instead of width=1 prevents it from shrinking or stretching off screen
         ee = tk.Text(inner, bg=bg, fg=t["text"], insertbackground=t["text"],
                      relief="flat", font=(FONT, 10), bd=0, wrap="word",
                      width=cpl, height=est_h,
@@ -868,7 +911,6 @@ class Aside:
         ee.insert("1.0", current)
         ee.pack(side="left", fill="x", expand=True)
         ee.focus_set()
-        # Fix: Cursor at end — no selection so typing doesn't instantly delete text
         ee.mark_set("insert", "end")
         ee.see("end")
 
@@ -887,8 +929,8 @@ class Aside:
             except Exception: pass
             g = self._find_goal_by_uid(uid)
             if g and nt:
-                g["text"] = nt; save_data(self.data)
-            self._render_all()
+                g["text"] = nt; self.save()
+            self._schedule_render()
             return "break"
 
         def cancel(e=None):
@@ -915,29 +957,30 @@ class Aside:
         if self._input_mode=="header_sm":item={"type":"header","size":"sm","text":text}
         elif self._input_mode=="header_lg":item={"type":"header","size":"lg","text":text}
         else:item={"text":text,"done":False}
-        self._ensure_uid(item);self._current_goals().append(item);save_data(self.data)
+        self._ensure_uid(item);self._current_goals().append(item);self.save()
         self.entry_var.set("");self.entry.configure(fg=self.T["text"]);self.entry.focus_set()
-        self._render_all();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
+        self._schedule_render();self.root.after(50,lambda:self.scroll.canvas.yview_moveto(1.0))
 
     def _remove_completed(self,go):
-        self.data["completed"]=[c for c in self.data["completed"] if c is not go];save_data(self.data);self._render_completed_section();self._render_all()
+        self.data["completed"]=[c for c in self.data["completed"] if c is not go];self.save();self._render_completed_section();self._schedule_render()
+
     def _clear_completed(self):
         tab=self.data["active_tab"];self.data["completed"]=[c for c in self.data.get("completed",[]) if c.get("workspace")!=tab]
-        save_data(self.data)
+        self.save()
         if self.comp_open:self._render_completed_section()
-        self._render_all()
+        self._schedule_render()
+
     def _cleanup_old_completed(self):
         cutoff=time.time()-86400;before=len(self.data.get("completed",[]))
         self.data["completed"]=[c for c in self.data.get("completed",[]) if c.get("completed_at",time.time())>cutoff]
         if len(self.data["completed"])!=before:
-            save_data(self.data)
+            self.save()
             try:
                 if self.comp_open:self._render_completed_section()
-                self._render_all()
+                self._schedule_render()
             except Exception:pass
         self.root.after(3_600_000,self._cleanup_old_completed)
 
-    # ── Drag reorder ──────────────────────────────────────────────────────────
     def _row_press(self, event, uid):
         if event.state & 0x4: return
         self._drag_pending_uid = uid
@@ -1026,13 +1069,12 @@ class Aside:
         if target_di >= len(active_after):
             insert_idx = active_after[-1][0] + 1 if active_after else 0
         else: insert_idx = active_after[target_di][0]
-        goals.insert(insert_idx, goal); save_data(self.data); self._render_all()
+        goals.insert(insert_idx, goal); self.save(); self._schedule_render()
 
-    # ── Window drag ───────────────────────────────────────────────────────────
     def _wdrag_start(self, e): self._drag_x = e.x_root - self.root.winfo_x(); self._drag_y = e.y_root - self.root.winfo_y()
+    
     def _wdrag_move(self, e): self.root.geometry(f"+{e.x_root - self._drag_x}+{e.y_root - self._drag_y}")
 
-    # ── Visibility ────────────────────────────────────────────────────────────
     def _toggle_visibility(self):
         if self.visible:
             self.root.withdraw(); self.visible = False; self._user_hidden = True
@@ -1042,6 +1084,7 @@ class Aside:
             self.root.update_idletasks(); self.root.focus_force()
             self.visible = True; self._user_hidden = False
             self.root.after(50, self._ensure_entry_works)
+            self.root.after(200, self._sync_dim_to_focus)
 
     def _show(self):
         self._check_focused_app_workspace()
@@ -1049,6 +1092,7 @@ class Aside:
         self.root.update_idletasks(); self.root.focus_force()
         self.visible = True; self._user_hidden = False
         self.root.after(50, self._ensure_entry_works)
+        self.root.after(200, self._sync_dim_to_focus) 
 
     def _check_focused_app_workspace(self):
         if not HAS_WIN32 or not self.data.get("app_rules"): return
@@ -1061,7 +1105,7 @@ class Aside:
         for pat, wk in self.data.get("app_rules", {}).items():
             if pat.lower() in proc and wk in self.data["workspaces"]:
                 if wk != self.data["active_tab"]:
-                    self.data["active_tab"] = wk; save_data(self.data); self._refresh_tabs(); self._render_all()
+                    self.data["active_tab"] = wk; self.save(); self._refresh_tabs(); self._schedule_render()
                 return
 
     def _initial_app_check(self):
@@ -1071,19 +1115,21 @@ class Aside:
             proc = psutil.Process(pid).name().lower(); self._prev_focused_proc = proc
             for pat, wk in self.data.get("app_rules", {}).items():
                 if pat.lower() in proc and wk in self.data["workspaces"]:
-                    self.data["active_tab"] = wk; save_data(self.data); self._refresh_tabs(); self._render_all()
-                    if self.data["settings"].get("auto_show", True):
+                    self.data["active_tab"] = wk; self.save(); self._refresh_tabs(); self._schedule_render()
+                    if self.data["settings"].get("auto_show", True) and not self._is_snoozed():
                         self.root.deiconify(); self.root.lift(); self.visible = True; self._user_hidden = False
                     return
         except Exception: pass
 
     def _cycle_size(self):
-        self._size_idx=(self._size_idx+1)%len(SIZE_PRESETS);self.data["settings"]["size_idx"]=self._size_idx;save_data(self.data)
+        self._size_idx=(self._size_idx+1)%len(SIZE_PRESETS);self.data["settings"]["size_idx"]=self._size_idx;self.save()
         cw,ch=self._current_wh();self.root.geometry(f"{cw}x{ch}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-        self.size_btn.configure(text=SIZE_LABELS[self._size_idx]);self._render_all()
+        self.size_btn.configure(text=SIZE_LABELS[self._size_idx]);self._schedule_render()
+
     def _open_fileshare(self):
         if self._share_win and self._share_win.alive:self._share_win.win.lift();return
         self._share_win=FileSharePanel(self)
+
     def _flash_share_btn(self,fn=""):
         try:
             btn=self._share_btn_ref;t=self.T;btn.configure(fg=t["check_on"])
@@ -1091,7 +1137,6 @@ class Aside:
             self.root.after(3500,lambda:[btn.configure(fg=t["tab_act"]),tip.destroy()])
         except Exception:pass
 
-    # ── Settings ──────────────────────────────────────────────────────────────
     def _open_settings(self):
         if self.settings_win and self.settings_win.winfo_exists():self.settings_win.lift();return
         win=tk.Toplevel(self.root);self.settings_win=win;win.title("Aside — Settings");win.configure(bg=S["bg"])
@@ -1107,6 +1152,7 @@ class Aside:
             r=tk.Frame(f,bg=S["bg"]);r.pack(fill="x",padx=16,pady=(12,4))
             tk.Label(r,text=title.upper(),bg=S["bg"],fg=S["accent"],font=(FONT,7,"bold")).pack(side="left")
             tk.Frame(r,bg=S["border"],height=1).pack(side="left",fill="x",expand=True,padx=(8,0))
+
         section("Appearance")
         tr=tk.Frame(f,bg=S["bg"]);tr.pack(fill="x",padx=16,pady=4);slbl(tr,"Theme").pack(side="left")
         for nm,sw in THEMES.items():
@@ -1121,16 +1167,26 @@ class Aside:
         def on_a(val):
             a=round(float(val),2);self.data["settings"]["alpha"]=a;self.root.attributes("-alpha",a);av.configure(text=f"{int((1-a)*100)}%")
             if _asid[0]:win.after_cancel(_asid[0])
-            _asid[0]=win.after(400,lambda:save_data(self.data))
+            _asid[0]=win.after(400,lambda:self.save())
         asc=tk.Scale(f,from_=0.3,to=1.0,resolution=0.01,orient="horizontal",command=on_a,bg=S["bg"],fg=S["text"],troughcolor=S["bg3"],highlightthickness=0,bd=0,showvalue=False,sliderlength=14,width=6)
         asc.set(ca);asc.pack(fill="x",padx=16,pady=(0,6))
         aor=tk.Frame(f,bg=S["bg"]);aor.pack(fill="x",padx=16,pady=4);slbl(aor,"Always on top").pack(side="left")
         aov=tk.BooleanVar(value=self.data["settings"].get("always_on_top",True))
         aol=tk.Label(aor,bg=S["bg"],font=(FONT,9,"bold"),cursor="hand2",width=4);aol.pack(side="right")
         def raot():aol.configure(text="ON" if aov.get() else "OFF",fg=S["accent"] if aov.get() else S["mute"])
-        def taot(e=None):aov.set(not aov.get());self.data["settings"]["always_on_top"]=aov.get();self.root.attributes("-topmost",aov.get());save_data(self.data);raot()
-        aol.bind("<Button-1>",taot);raot();sep()
-        section("Global Hotkey");slbl(f,"Click Record, then press your combo.",mute=True).pack(anchor="w",padx=16,pady=(0,6))
+        def taot(e=None):aov.set(not aov.get());self.data["settings"]["always_on_top"]=aov.get();self.root.attributes("-topmost",aov.get());self.save();raot()
+        aol.bind("<Button-1>",taot);raot()
+        dimr=tk.Frame(f,bg=S["bg"]);dimr.pack(fill="x",padx=16,pady=4);slbl(dimr,"Dim when unfocused").pack(side="left")
+        dimv=tk.BooleanVar(value=self.data["settings"].get("dim_enabled",False))
+        diml=tk.Label(dimr,bg=S["bg"],font=(FONT,9,"bold"),cursor="hand2",width=4);diml.pack(side="right")
+        def rdim():diml.configure(text="ON" if dimv.get() else "OFF",fg=S["accent"] if dimv.get() else S["mute"])
+        def tdim(e=None):dimv.set(not dimv.get());self.data["settings"]["dim_enabled"]=dimv.get();self.save();rdim()
+        diml.bind("<Button-1>",tdim);rdim()
+
+        sep()
+
+        section("Hotkey")
+        slbl(f,"Press Record, then your key combo.",mute=True).pack(anchor="w",padx=16,pady=(0,6))
         hkr=tk.Frame(f,bg=S["bg"]);hkr.pack(fill="x",padx=16);chk_=self.data["settings"].get("hotkey","ctrl+alt+g")
         hkd=tk.Label(hkr,text=chk_,bg=S["bg3"],fg=S["text"],font=(FONT,10),padx=10,pady=6,width=20,anchor="w");hkd.pack(side="left")
         rb=tk.Label(hkr,text="  Record  ",bg=S["accent"],fg="#fff",font=(FONT,9,"bold"),padx=6,pady=6,cursor="hand2");rb.pack(side="left",padx=(8,0))
@@ -1143,9 +1199,12 @@ class Aside:
             if not self._recording:return
             if e.keysym.lower() in ("control_l","control_r","alt_l","alt_r","shift_l","shift_r","super_l","super_r"):return
             self._recording=False;win.unbind("<KeyPress>");win.unbind("<KeyRelease>");combo="+".join(self._hk_parts)
-            self.data["settings"]["hotkey"]=combo;save_data(self.data);hkd.configure(text=combo);rb.configure(bg=S["accent"],text="  Record  ");hks.configure(text=f"✓ {combo}");self._register_hotkey()
+            self.data["settings"]["hotkey"]=combo;self.save();hkd.configure(text=combo);rb.configure(bg=S["accent"],text="  Record  ");hks.configure(text=f"✓ {combo}");self._register_hotkey()
         def srec(e=None):self._recording=True;self._hk_parts=[];rb.configure(bg="#c44444",text="● Rec");hkd.configure(text="...");win.bind("<KeyPress>",okp);win.bind("<KeyRelease>",okr)
-        rb.bind("<Button-1>",srec);sep()
+        rb.bind("<Button-1>",srec)
+
+        sep()
+
         section("Workspaces")
         wsc=tk.Frame(f,bg=S["bg"]);wsc.pack(fill="x",padx=16)
         def bws():
@@ -1153,7 +1212,10 @@ class Aside:
             for key,ws in self.data["workspaces"].items():
                 r=tk.Frame(wsc,bg=S["bg2"]);r.pack(fill="x",pady=2)
                 ct=len([g for g in ws.get("goals",[]) if not g.get("done")])
-                tk.Label(r,text=ws["name"],bg=S["bg2"],fg=S["text"],font=(FONT,9),anchor="w").pack(side="left",padx=10,pady=6,fill="x",expand=True)
+                wcolor = ws.get("color", None)
+                nl = tk.Label(r,text=ws["name"],bg=S["bg2"],fg=S["text"],font=(FONT,9),anchor="w")
+                nl.pack(side="left",padx=10,pady=6,fill="x",expand=True)
+                if wcolor: tk.Frame(r, bg=wcolor, width=4).pack(side="left", fill="y", padx=(0,4))
                 tk.Label(r,text=f"{ct}",bg=S["bg2"],fg=S["mute"],font=(FONT,7)).pack(side="left",padx=6)
                 if key!="main":
                     dl=tk.Label(r,text="Delete",bg=S["bg2"],fg=S["danger"],font=(FONT,8),cursor="hand2");dl.pack(side="right",padx=10)
@@ -1168,18 +1230,14 @@ class Aside:
             name=nwv.get().strip()
             if not name or name=="New workspace name":return
             key=f"ws_{len(self.data['workspaces'])}_{name.lower().replace(' ','_')}";self.data["workspaces"][key]={"name":name,"goals":[]}
-            self.data["active_tab"]=key;save_data(self.data);nwe.delete(0,"end");nwe.insert(0,"New workspace name");nwe.configure(fg=S["mute"])
-            bws();self._refresh_tabs();self._render_all();self._sync_settings()
+            self.data["active_tab"]=key;self.save();nwe.delete(0,"end");nwe.insert(0,"New workspace name");nwe.configure(fg=S["mute"])
+            bws();self._refresh_tabs();self._schedule_render();self._sync_settings()
         nwe.bind("<Return>",lambda e:cws());cb=tk.Label(nwr,text=" Create ",bg=S["accent"],fg="#fff",font=(FONT,8,"bold"),padx=6,pady=4,cursor="hand2");cb.pack(side="left");cb.bind("<Button-1>",lambda e:cws())
+
         sep()
-        section("App-Sensitive Workspaces");slbl(f,"Auto-switch workspace when an app gains focus.",mute=True).pack(anchor="w",padx=16,pady=(0,2))
-        slbl(f,"You can type a process name or use Browse.",mute=True).pack(anchor="w",padx=16,pady=(0,6))
-        asr=tk.Frame(f,bg=S["bg"]);asr.pack(fill="x",padx=16,pady=(0,8));slbl(asr,"Auto-show widget on app focus").pack(side="left")
-        asv=tk.BooleanVar(value=self.data["settings"].get("auto_show",True))
-        asl=tk.Label(asr,bg=S["bg"],font=(FONT,9,"bold"),cursor="hand2",width=4);asl.pack(side="right")
-        def ras():asl.configure(text="ON" if asv.get() else "OFF",fg=S["accent"] if asv.get() else S["mute"])
-        def tas(e=None):asv.set(not asv.get());self.data["settings"]["auto_show"]=asv.get();save_data(self.data);ras()
-        asl.bind("<Button-1>",tas);ras()
+
+        section("App Switching")
+        slbl(f,"Assign a workspace to an app — Aside switches\nautomatically when that app is in focus.",mute=True).pack(anchor="w",padx=16,pady=(0,8))
         rc=tk.Frame(f,bg=S["bg"]);rc.pack(fill="x",padx=16);arc=tk.Frame(f,bg=S["bg"]);arc.pack(fill="x",padx=16)
         def brl():
             for w in rc.winfo_children():w.destroy()
@@ -1191,7 +1249,7 @@ class Aside:
                     tk.Label(r,text=proc,bg=S["bg2"],fg=S["text"],font=(FONT,9,"bold"),width=16,anchor="w").pack(side="left",padx=8,pady=5)
                     tk.Label(r,text=f"→ {wsn}",bg=S["bg2"],fg=S["mute"],font=(FONT,8)).pack(side="left")
                     xb=tk.Label(r,text="×",bg=S["bg2"],fg=S["mute"],font=(FONT,11),cursor="hand2");xb.pack(side="right",padx=8)
-                    xb.bind("<Button-1>",lambda e,p=proc:[self.data["app_rules"].pop(p,None),save_data(self.data),brl()])
+                    xb.bind("<Button-1>",lambda e,p=proc:[self.data["app_rules"].pop(p,None),self.save(),brl()])
             for w in arc.winfo_children():w.destroy()
             pv=tk.StringVar();wsn_map={v["name"]:k for k,v in self.data["workspaces"].items()};wv=tk.StringVar()
             if wsn_map:wv.set(list(wsn_map)[0])
@@ -1230,18 +1288,43 @@ class Aside:
             om.configure(bg=S["input_bg"],fg=S["input_fg"],activebackground=S["bg3"],relief="flat",font=(FONT,9),bd=0);om.pack(side="left",padx=(4,0))
             def addrl():
                 p=pv.get().strip();wk=wsn_map.get(wv.get())
-                if p and wk:self.data.setdefault("app_rules",{})[p]=wk;save_data(self.data);pv.set("");brl()
+                if p and wk:self.data.setdefault("app_rules",{})[p]=wk;self.save();pv.set("");brl()
             arb=tk.Label(arc,text="  Add Rule  ",bg=S["accent"],fg="#fff",font=(FONT,8,"bold"),padx=10,pady=4,cursor="hand2");arb.pack(anchor="e",pady=6);arb.bind("<Button-1>",lambda e:addrl())
-        brl();self._settings_rebuild_rules=brl;sep()
-        section("Phone Sync");slbl(f,"Access goals from any device on same network.",mute=True).pack(anchor="w",padx=16,pady=(0,6))
+        brl();self._settings_rebuild_rules=brl
+ 
+        tk.Frame(f,bg=S["border"],height=1).pack(fill="x",padx=16,pady=(8,6))
+
+        asr=tk.Frame(f,bg=S["bg"]);asr.pack(fill="x",padx=16,pady=4);slbl(asr,"Show goals on app switch").pack(side="left")
+        asv=tk.BooleanVar(value=self.data["settings"].get("auto_show",True))
+        asl=tk.Label(asr,bg=S["bg"],font=(FONT,9,"bold"),cursor="hand2",width=4);asl.pack(side="right")
+        def ras():asl.configure(text="ON" if asv.get() else "OFF",fg=S["accent"] if asv.get() else S["mute"])
+        def tas(e=None):asv.set(not asv.get());self.data["settings"]["auto_show"]=asv.get();self.save();ras()
+        asl.bind("<Button-1>",tas);ras()
+
+        snz_hdr=tk.Frame(f,bg=S["bg"]);snz_hdr.pack(fill="x",padx=16,pady=(6,2));slbl(snz_hdr,"Pause auto-show").pack(side="left")
+        self._snooze_status_lbl=tk.Label(snz_hdr,bg=S["bg"],fg=S["mute"],font=(FONT,8));self._snooze_status_lbl.pack(side="right")
+        self._update_snooze_indicator()
+        snz_row=tk.Frame(f,bg=S["bg"]);snz_row.pack(fill="x",padx=16,pady=(2,4))
+        for label,secs in [("10m",600),("30m",1800),("1h",3600),("24h",86400)]:
+            sb=tk.Label(snz_row,text=f"  {label}  ",bg=S["bg3"],fg=S["text"],font=(FONT,8),padx=6,pady=4,cursor="hand2");sb.pack(side="left",padx=(0,4))
+            sb.bind("<Button-1>",lambda e,s=secs:self._set_snooze(s))
+            sb.bind("<Enter>",lambda e,b=sb:b.configure(bg=S["accent"],fg="#fff"));sb.bind("<Leave>",lambda e,b=sb:b.configure(bg=S["bg3"],fg=S["text"]))
+        clr_snz=tk.Label(snz_row,text="  Clear  ",bg=S["bg3"],fg=S["danger"],font=(FONT,8),padx=6,pady=4,cursor="hand2");clr_snz.pack(side="left",padx=(4,0))
+        clr_snz.bind("<Button-1>",lambda e:self._clear_snooze())
+        clr_snz.bind("<Enter>",lambda e:clr_snz.configure(bg=S["danger"],fg="#fff"));clr_snz.bind("<Leave>",lambda e:clr_snz.configure(bg=S["bg3"],fg=S["danger"]))
+
+        sep()
+
+        section("Sync")
+        slbl(f,"Access your goals from any device on the same network.",mute=True).pack(anchor="w",padx=16,pady=(0,6))
         sv=tk.BooleanVar(value=self.data["settings"].get("sync_enabled",False))
-        sr_=tk.Frame(f,bg=S["bg"]);sr_.pack(fill="x",padx=16,pady=4);slbl(sr_,"Enable sync server").pack(side="left")
+        sr_=tk.Frame(f,bg=S["bg"]);sr_.pack(fill="x",padx=16,pady=4);slbl(sr_,"Enable server").pack(side="left")
         sl=tk.Label(sr_,bg=S["bg"],font=(FONT,9,"bold"),cursor="hand2",width=4);sl.pack(side="right")
         pv_=tk.IntVar(value=self.data["settings"].get("sync_port",7842));ips=get_local_ip()
         ul=tk.Label(f,bg=S["bg2"],fg=S["accent"],font=(FONT,10),padx=12,pady=8);ul.pack(fill="x",padx=16,pady=(4,2))
         def rsu():sl.configure(text="ON" if sv.get() else "OFF",fg=S["accent"] if sv.get() else S["mute"]);ul.configure(text=f"http://{ips}:{pv_.get()}" if sv.get() else "Server off")
         def tsync(e=None):
-            sv.set(not sv.get());self.data["settings"]["sync_enabled"]=sv.get();save_data(self.data)
+            sv.set(not sv.get());self.data["settings"]["sync_enabled"]=sv.get();self.save()
             if sv.get():self._start_sync_server()
             else:self._stop_sync_server()
             rsu()
@@ -1249,11 +1332,31 @@ class Aside:
         pr=tk.Frame(f,bg=S["bg"]);pr.pack(fill="x",padx=16,pady=(2,0));slbl(pr,"Port",mute=True).pack(side="left")
         pe2=tk.Entry(pr,textvariable=pv_,bg=S["input_bg"],fg=S["input_fg"],insertbackground=S["input_fg"],relief="flat",font=(FONT,9),width=8);pe2.pack(side="left",padx=(8,0))
         def ap(e=None):
-            try:p=int(pv_.get());assert 1024<=p<=65535;self.data["settings"]["sync_port"]=p;save_data(self.data)
+            try:p=int(pv_.get());assert 1024<=p<=65535;self.data["settings"]["sync_port"]=p;self.save()
             except:pv_.set(self.data["settings"].get("sync_port",7842))
             if sv.get():self._stop_sync_server();self._start_sync_server()
             rsu()
-        pe2.bind("<Return>",ap);pe2.bind("<FocusOut>",ap);tk.Frame(f,bg=S["bg"],height=30).pack()
+        pe2.bind("<Return>",ap);pe2.bind("<FocusOut>",ap)
+
+        sep()
+
+        section("Contact")
+        slbl(f, "Got feedback, ideas, or found a bug?", mute=True).pack(anchor="w", padx=16, pady=(0,6))
+        cr = tk.Frame(f, bg=S["bg2"]); cr.pack(fill="x", padx=16, pady=(0,4))
+        tk.Label(cr, text="📧", bg=S["bg2"], fg=S["text"], font=(FONT, 11)).pack(side="left", padx=(10,4), pady=8)
+        em = tk.Label(cr, text="h1nusimob@mozmail.com", bg=S["bg2"], fg=S["accent"], font=(FONT, 9), anchor="w")
+        em.pack(side="left", fill="x", expand=True, pady=8)
+        _copied_lbl = tk.Label(cr, text="", bg=S["bg2"], fg="#5ddd5d", font=(FONT, 7))
+        _copied_lbl.pack(side="right", padx=(0, 4))
+        def _copy_email(e=None):
+            self.root.clipboard_clear(); self.root.clipboard_append("h1nusimob@mozmail.com")
+            _copied_lbl.configure(text="Copied!")
+            win.after(2000, lambda: _copied_lbl.configure(text=""))
+        cpb = tk.Label(cr, text=" Copy ", bg=S["accent"], fg="#fff", font=(FONT, 8, "bold"), padx=6, pady=3, cursor="hand2")
+        cpb.pack(side="right", padx=10, pady=6); cpb.bind("<Button-1>", _copy_email)
+        slbl(f, "Your feedback helps make Aside better. Thank you!", mute=True).pack(anchor="w", padx=16, pady=(2, 4))
+
+        tk.Frame(f,bg=S["bg"],height=30).pack()
 
     def _sync_settings(self):
         if not(self.settings_win and self.settings_win.winfo_exists()):return
@@ -1261,10 +1364,12 @@ class Aside:
             if fn:
                 try:fn()
                 except Exception:pass
+
     def _set_theme(self,name):
-        self.data["settings"]["theme"]=name;save_data(self.data)
+        self.data["settings"]["theme"]=name;self.save()
         if self.settings_win and self.settings_win.winfo_exists():self.settings_win.destroy();self.settings_win=None
         self._full_redraw();self.root.after(80,self._open_settings)
+
     def _register_hotkey(self):
         if not HAS_HOTKEY:return
         try:
@@ -1273,67 +1378,102 @@ class Aside:
         combo=self.data["settings"].get("hotkey","ctrl+alt+g")
         try:self._hotkey_id=keyboard.add_hotkey(combo,lambda:self.root.after(0,self._toggle_visibility))
         except Exception as e:log_error(f"hotkey fail ({combo}): {e}")
+
     def _app_watch_loop(self):
-        try:_own=psutil.Process(os.getpid()).name().lower()
-        except Exception:_own="python.exe"
+        try: _own = psutil.Process(os.getpid()).name().lower()
+        except Exception: _own = "python.exe"
         while True:
-            if not self.data.get("app_rules"):time.sleep(5);continue
+            self._watch_active.wait()
+            if not self.data.get("app_rules"):
+                time.sleep(5)
+                continue
             try:
-                hwnd=win32gui.GetForegroundWindow();_,pid=win32process.GetWindowThreadProcessId(hwnd);proc=psutil.Process(pid).name().lower()
-                if proc==_own:time.sleep(1.5);continue
-                if proc!=self._prev_focused_proc:
-                    self._prev_focused_proc=proc
-                    for pat,wk in list(self.data.get("app_rules",{}).items()):
-                        if pat.lower() in proc:
-                            if wk!=self.data["active_tab"] and wk in self.data["workspaces"]:
-                                self._user_hidden=False;self.data["active_tab"]=wk;self._app_switch_queue.put(("switch",wk))
-                            elif not self.visible and not self._user_hidden and self.data["settings"].get("auto_show",True):
-                                self._app_switch_queue.put(("show",None))
+                hwnd = win32gui.GetForegroundWindow()
+                _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                proc = psutil.Process(pid).name().lower()
+                if proc == _own:
+                    time.sleep(1.5)
+                    continue
+                if proc != self._prev_focused_proc:
+                    self._prev_focused_proc = proc
+                    for pat, wk in list(self.data.get("app_rules", {}).items()):
+                        if pat.lower() in proc and wk in self.data["workspaces"]:
+                            self._user_hidden = False 
+                            if wk != self.data["active_tab"]:
+                                self.data["active_tab"] = wk
+                                self._app_switch_queue.put(("switch", wk))
+                            elif not self.visible and self.data["settings"].get("auto_show", True):
+                                self._app_switch_queue.put(("show", None))
                             break
-            except Exception:pass
+            except Exception: pass
             time.sleep(1.5)
+
     def _poll_app_switch_queue(self):
         try:
             while True:
-                ev,wk=self._app_switch_queue.get_nowait()
-                if ev=="switch":self._on_app_switch(wk)
-                elif ev=="show":self.root.deiconify();self.visible=True
-        except queue.Empty:pass
-        self.root.after(200,self._poll_app_switch_queue)
-    def _on_app_switch(self,wk):
-        wsn=self.data["workspaces"].get(wk,{}).get("name","");self.app_badge.configure(text=f"● {wsn}")
-        self._refresh_tabs();self._render_all();save_data(self.data)
-        if self.data["settings"].get("auto_show",True) and not self.visible and not self._user_hidden:self.root.deiconify();self.visible=True
+                ev, wk = self._app_switch_queue.get_nowait()
+                if ev == "switch":
+                    self._on_app_switch(wk)
+                elif ev == "show":
+                    if not self._is_snoozed():
+                        self.root.deiconify(); self.visible = True
+        except queue.Empty: pass
+        self.root.after(200, self._poll_app_switch_queue)
+
+    def _on_app_switch(self, wk):
+        self.data["active_tab"] = wk
+        self.save()
+        if self._is_snoozed(): return
+        wsn = self.data["workspaces"].get(wk, {}).get("name", "")
+        self.app_badge.configure(text=f"● {wsn}")
+        self._refresh_tabs()
+        self._schedule_render()
+        if self.data["settings"].get("auto_show", True) and not self.visible and not self._user_hidden:
+            self.root.deiconify(); self.visible = True
+
     def _delete_workspace(self,key,rebuild_fn=None):
         if key=="main":return
         if messagebox.askyesno("Delete",f"Delete '{self.data['workspaces'][key]['name']}'?",parent=self.settings_win or self.root):
             del self.data["workspaces"][key]
             if self.data["active_tab"]==key:self.data["active_tab"]="main"
-            save_data(self.data)
+            self.save()
             if rebuild_fn:rebuild_fn()
-            self._refresh_tabs();self._render_all()
+            self._refresh_tabs();self._schedule_render()
+
     def _rename_workspace(self,key):
         ws=self.data["workspaces"].get(key)
         if not ws:return
         nn=simpledialog.askstring("Rename","New name:",initialvalue=ws["name"],parent=self.root)
-        if nn and nn.strip():ws["name"]=nn.strip();save_data(self.data);self._refresh_tabs();self._render_all();self._sync_settings()
+        if nn and nn.strip():ws["name"]=nn.strip();self.save();self._refresh_tabs();self._schedule_render();self._sync_settings()
+
     def _tab_context_menu(self,event,key):
         t=self.T;m=tk.Menu(self.root,tearoff=0,bg=t["bg_header"],fg=t["text"],font=(FONT,9))
         m.add_command(label="Rename",command=lambda:self._rename_workspace(key))
+        cm = tk.Menu(m, tearoff=0, bg=t["bg_header"], fg=t["text"], font=(FONT, 9))
+        current_color = self.data["workspaces"].get(key, {}).get("color", None)
+        for cname, cval in WS_COLORS.items():
+            prefix = "● " if cval == current_color else "  "
+            if cval is None: prefix = "● " if current_color is None else "  "
+            cm.add_command(label=f"{prefix}{cname}", foreground=cval if cval else t["text"], command=lambda c=cval, k=key: self._set_ws_color(k, c))
+        m.add_cascade(label="Color", menu=cm)
         if key!="main":m.add_separator();m.add_command(label="Delete",command=lambda:self._delete_workspace(key))
         try:m.tk_popup(event.x_root,event.y_root)
         finally:m.grab_release()
+
     def _start_sync_server(self):
         if self._sync_server:return
         try:
-            port=self.data["settings"].get("sync_port",7842);MobileHandler.app=self
+            port=self.data["settings"].get("sync_port",7842)
+            MobileHandler.app=self
             self._sync_server=ServerClass(("0.0.0.0",port),MobileHandler);threading.Thread(target=self._sync_server.serve_forever,daemon=True).start()
         except Exception as e:log_error(f"sync fail: {e}");self._sync_server=None
+
     def _stop_sync_server(self):
         if self._sync_server:
             try:self._sync_server.shutdown()
             except Exception:pass
             self._sync_server=None
+
     def _setup_tray(self):
         if not HAS_TRAY:return
         sz=64;img=Image.new("RGBA",(sz,sz),(0,0,0,0));d=ImageDraw.Draw(img)
@@ -1342,9 +1482,16 @@ class Aside:
         for y_,w_ in[(20,36),(30,28),(40,20)]:d.line([13,y_,13+w_,y_],fill=(180,180,180),width=2)
         d.ellipse([10,16,17,23],fill=(90,220,90));hk=self.data["settings"].get("hotkey","ctrl+alt+g")
         menu=pystray.Menu(pystray.MenuItem("Show / Hide",lambda*_:self.root.after(0,self._toggle_visibility),default=True),
-            pystray.MenuItem("Settings",lambda*_:self.root.after(0,self._open_settings)),pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Settings",lambda*_:self.root.after(0,self._open_settings)),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Snooze auto-popup 10m",lambda*_:self.root.after(0,lambda:self._set_snooze(600))),
+            pystray.MenuItem("Snooze auto-popup 30m",lambda*_:self.root.after(0,lambda:self._set_snooze(1800))),
+            pystray.MenuItem("Snooze auto-popup 1h",lambda*_:self.root.after(0,lambda:self._set_snooze(3600))),
+            pystray.MenuItem("Cancel snooze",lambda*_:self.root.after(0,self._clear_snooze)),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit",lambda*_:self.root.after(0,self._quit)))
         self.tray=pystray.Icon("Aside",img,f"Aside  ({hk})",menu);threading.Thread(target=self.tray.run,daemon=True).start()
+
     def _quit(self):
         self._save_position();self._stop_sync_server()
         if self._share_win and self._share_win.alive:
@@ -1354,17 +1501,17 @@ class Aside:
             try:self.tray.stop()
             except Exception:pass
         self.root.destroy()
+
     def run(self):self.root.mainloop()
 
-# ── File Share Panel ──────────────────────────────────────────────────────────
-import http.client as _http_client
-from tkinter import filedialog as _filedialog
 P={"bg":"#111318","bg2":"#1a1d24","bg3":"#22262f","border":"#2a2f3a","text":"#dde2ec","mute":"#6b7280","accent":"#4f8ef7","green":"#3ecf6e","red":"#e05555","bar_bg":"#1e2230","bar_fg":"#4f8ef7","send_fg":"#3ecf6e","recv_fg":"#c97bf7"}
+
 def _fmt_size(n):
     for u in("B","KB","MB","GB"):
         if n<1024:return f"{n:.1f} {u}"
         n/=1024
     return f"{n:.1f} TB"
+
 class _TransferRow:
     def __init__(self,parent,tid,fn,total,peer,inc):
         self.tid=tid;self.total=total;self.received=0;self.done=False;self._last_b=0;self._last_t=time.time();self._speed=0.0
@@ -1380,6 +1527,7 @@ class _TransferRow:
         tk.Label(bot,text=peer,bg=P["bg2"],fg=P["mute"],font=("Segoe UI",7)).pack(side="left")
         self.spd=tk.Label(bot,text="",bg=P["bg2"],fg=P["mute"],font=("Segoe UI",7));self.spd.pack(side="right")
         tk.Frame(self.frame,bg=P["border"],height=1).pack(fill="x")
+
     def update(self,rcv,total=None):
         if total:self.total=total
         self.received=rcv;now=time.time();dt=now-self._last_t
@@ -1388,6 +1536,7 @@ class _TransferRow:
         self.bar.update_idletasks();w=self.bar.winfo_width() or 200;self.bar.delete("all")
         fl=int(w*pct/100)
         if fl>0:self.bar.create_rectangle(0,0,fl,5,fill=P["bar_fg"],outline="")
+
     def mark_done(self,ok=True):
         self.done=True;c=P["green"] if ok else P["red"];self.pct.configure(text="Done" if ok else "Failed",fg=c);self.spd.configure(text="")
         self.bar.delete("all");w=self.bar.winfo_width() or 200;self.bar.create_rectangle(0,0,w,5,fill=c,outline="")
@@ -1397,6 +1546,7 @@ class FileSharePanel:
         self.app=app;self.alive=True;self._peers={};self._transfers={};self._server=None
         self._build_window();self._start_server()
         threading.Thread(target=self._discover_loop,daemon=True).start();threading.Thread(target=self._announce_loop,daemon=True).start();self._poll_peers()
+
     def _build_window(self):
         self.win=tk.Toplevel(self.app.root);self.win.title("Share");self.win.configure(bg=P["bg"]);self.win.geometry("420x560")
         self.win.resizable(False,False);self.win.attributes("-topmost",True);self.win.overrideredirect(True);self.win.protocol("WM_DELETE_WINDOW",self._close)
@@ -1424,11 +1574,15 @@ class FileSharePanel:
         canvas.pack(side="left",fill="both",expand=True);vsb.pack(side="right",fill="y")
         self._ti.bind("<Configure>",lambda e:canvas.configure(scrollregion=canvas.bbox("all")));canvas.bind("<Configure>",lambda e:canvas.itemconfig(twi,width=e.width))
         self._ntl=tk.Label(self._ti,text="No transfers",bg=P["bg"],fg=P["mute"],font=("Segoe UI",9));self._ntl.pack(anchor="w",pady=10)
+
     def _sec(self,p,t):
         r=tk.Frame(p,bg=P["bg"]);r.pack(fill="x",padx=12,pady=(10,4));tk.Label(r,text=t,bg=P["bg"],fg=P["accent"],font=("Segoe UI",7,"bold")).pack(side="left")
         tk.Frame(r,bg=P["border"],height=1).pack(side="left",fill="x",expand=True,padx=(8,0))
+
     def _ds(self,e):self._dx=e.x_root-self.win.winfo_x();self._dy=e.y_root-self.win.winfo_y()
+
     def _dm(self,e):self.win.geometry(f"+{e.x_root-self._dx}+{e.y_root-self._dy}")
+
     def _announce_loop(self):
         sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);sock.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1);sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         msg=json.dumps({"dg":True,"name":DEVICE_NAME,"port":SHARE_PORT}).encode()
@@ -1437,6 +1591,7 @@ class FileSharePanel:
             except:pass
             time.sleep(4)
         sock.close()
+
     def _discover_loop(self):
         sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);sock.settimeout(2)
         try:sock.bind(("0.0.0.0",DISCOVER_PORT))
@@ -1447,27 +1602,54 @@ class FileSharePanel:
                 if pkt.get("dg") and pkt.get("name")!=DEVICE_NAME:self._peers[pkt["name"]]={"ip":addr[0],"port":pkt.get("port",SHARE_PORT),"ts":time.time()}
             except:pass
         sock.close()
+
     def _poll_peers(self):
         if not self.alive:return
         now=time.time();self._peers={n:p for n,p in self._peers.items() if now-p["ts"]<12}
         MobileHandler._connected_ips={ip:i for ip,i in MobileHandler._connected_ips.items() if now-i["ts"]<15};self._rpu();self.app.root.after(3000,self._poll_peers)
+
     def _rpu(self):
-        for w in self._pf.winfo_children():w.destroy()
-        sp=self.app.data["settings"].get("sync_port",7842)
+        # 1. Gather the current state of all peer names
+        current_names = list(self._peers.keys())
+        sp = self.app.data["settings"].get("sync_port", 7842)
+        
+        # Include connected mobile browsers from the handler
         if self.app._sync_server:
-            for ip,info in MobileHandler._connected_ips.items():
-                nm=info.get("name",f"Browser ({ip})")
-                if nm not in self._peers:self._peers[nm]={"ip":ip,"port":sp,"mobile":True,"ts":time.time()}
+            for ip, info in MobileHandler._connected_ips.items():
+                nm = info.get("name", f"Browser ({ip})")
+                if nm not in current_names:
+                    current_names.append(nm)
+                # Ensure they exist in our peer dict for the _pr() renderer
+                if nm not in self._peers:
+                    self._peers[nm] = {"ip": ip, "port": sp, "mobile": True, "ts": time.time()}
+
+        # 2. Check for changes: Only redraw if the list of names has changed
+        peer_state = sorted(current_names)
+        if hasattr(self, "_last_peer_state") and self._last_peer_state == peer_state:
+            return 
+        self._last_peer_state = peer_state
+
+        # 3. Perform the actual UI update (only if state changed)
+        for w in self._pf.winfo_children():
+            w.destroy()
+            
         if not self._peers:
-            tk.Label(self._pf,text="No devices found.",bg=P["bg"],fg=P["mute"],font=("Segoe UI",9)).pack(anchor="w",pady=6);self._sd.configure(fg=P["mute"]);self._sl.configure(text="Scanning…")
+            tk.Label(self._pf, text="No devices found.", bg=P["bg"], fg=P["mute"], font=("Segoe UI", 9)).pack(anchor="w", pady=6)
+            self._sd.configure(fg=P["mute"])
+            self._sl.configure(text="Scanning…")
         else:
-            n=len(self._peers);self._sd.configure(fg=P["green"]);self._sl.configure(text=f"{n} device{'s' if n>1 else ''}")
-            for nm,info in self._peers.items():self._pr(nm,info)
+            n = len(self._peers)
+            self._sd.configure(fg=P["green"])
+            self._sl.configure(text=f"{n} device{'s' if n>1 else ''}")
+            for nm, info in self._peers.items():
+                self._pr(nm, info)
+
     def _pr(self,name,info):
         r=tk.Frame(self._pf,bg=P["bg2"]);r.pack(fill="x",pady=2);tk.Label(r,text="●",bg=P["bg2"],fg=P["green"],font=("Segoe UI",8)).pack(side="left",padx=(10,4),pady=8)
         tk.Label(r,text=name,bg=P["bg2"],fg=P["text"],font=("Segoe UI",9,"bold")).pack(side="left");tk.Label(r,text=info["ip"],bg=P["bg2"],fg=P["mute"],font=("Segoe UI",7)).pack(side="left",padx=(6,0))
         sb=tk.Label(r,text="  Send  ",bg=P["accent"],fg="#fff",font=("Segoe UI",8,"bold"),padx=6,pady=4,cursor="hand2");sb.pack(side="right",padx=10,pady=6)
         sb.bind("<Button-1>",lambda e,ip=info["ip"],p=info["port"]:self._pas(ip,p,name))
+
     def _amp(self,ip):
         if not ip or ip=="192.168.x.x":return
         def probe():
@@ -1475,9 +1657,11 @@ class FileSharePanel:
             except:nm=ip
             self._peers[nm]={"ip":ip,"port":SHARE_PORT,"ts":time.time()};self.app.root.after(0,self._rpu)
         threading.Thread(target=probe,daemon=True).start()
+
     def _pas(self,ip,port,pn):
         path=_filedialog.askopenfilename(parent=self.win,title=f"Send to {pn}")
         if path:self._sf(path,ip,port,pn)
+
     def _sf(self,fp,ip,port,pn):
         if not os.path.isfile(fp):return
         fn=os.path.basename(fp);fs=os.path.getsize(fp);tid=f"s_{time.time():.3f}";mob=self._peers.get(pn,{}).get("mobile",False)
@@ -1499,6 +1683,7 @@ class FileSharePanel:
                 self.app.root.after(0,lambda:row.mark_done(ok))
             except Exception as ex:log_error(f"send fail: {ex}");self.app.root.after(0,lambda:row.mark_done(False))
         threading.Thread(target=ds,daemon=True).start()
+
     def _start_server(self):
         panel=self
         class H(BaseHTTPRequestHandler):
@@ -1528,17 +1713,22 @@ class FileSharePanel:
                 self.end_headers()
         try:self._server=ServerClass(("0.0.0.0",SHARE_PORT),H);threading.Thread(target=self._server.serve_forever,daemon=True).start();self._sl.configure(text="Ready · "+get_local_ip());self._sd.configure(fg=P["accent"])
         except Exception as e:log_error(f"share fail: {e}");self._sl.configure(text=f"Port {SHARE_PORT} busy");self._sd.configure(fg=P["red"])
+
     def _add_recv_row(self,tid,fn,total,sender):self._ntl.pack_forget();self._transfers[tid]=_TransferRow(self._ti,tid,fn,total,sender,inc=True)
+
     def _update_recv(self,tid,rcv,total):
         if tid in self._transfers:self._transfers[tid].update(rcv,total)
+
     def _finish_recv(self,tid,ok,dest):
         if tid in self._transfers:self._transfers[tid].mark_done(ok)
         if ok and dest:self._sl.configure(text=f"Got: {os.path.basename(dest)}",fg=P["green"]);self.app.root.after(4000,lambda:self._sl.configure(text="Ready · "+get_local_ip(),fg=P["mute"]))
+
     def _cleanup(self):
         self.alive=False
         if self._server:
-            try:self. _server.shutdown()
+            try:self._server.shutdown()
             except:pass
+
     def _close(self):
         self._cleanup()
         try:self.win.destroy()
@@ -1546,4 +1736,6 @@ class FileSharePanel:
 
 if __name__=="__main__":
     try:Aside().run()
-    except Exception:log_error(traceback.format_exc());raise
+    except Exception:
+        log_error(traceback.format_exc())
+        raise
